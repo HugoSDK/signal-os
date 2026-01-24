@@ -45,7 +45,7 @@
         const X = (props) => <IconWrapper {...props}><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></IconWrapper>;
         const Calendar = (props) => <IconWrapper {...props}><rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect><line x1="16" y1="2" x2="16" y2="6"></line><line x1="8" y1="2" x2="8" y2="6"></line><line x1="3" y1="10" x2="21" y2="10"></line></IconWrapper>;
         const Activity = (props) => <IconWrapper {...props}><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline></IconWrapper>;
-        const Trash2 = (props) => <IconWrapper {...props}><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path><line x1="10" y1="11" x2="10" y2="17"></line><line x1="14" y1="11" x2="14" y2="17"></line></IconWrapper>;
+        const Trash2 = (props) => <IconWrapper {...props}><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path><line x1="10" y1="11" x2="10" y2="17"></line><line x1="14" y1="11" x2="14" y2="17"></line></IconWrapper>;
         const ArrowRight = (props) => <IconWrapper {...props}><line x1="5" y1="12" x2="19" y2="12"></line><polyline points="12 5 19 12 12 19"></polyline></IconWrapper>;
         const Plus = (props) => <IconWrapper {...props}><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></IconWrapper>;
         const RotateCcw = (props) => <IconWrapper {...props}><polyline points="1 4 1 10 7 10"></polyline><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"></path></IconWrapper>;
@@ -100,7 +100,14 @@
 
             // Weekly State - Persistent
             const [weekOf, setWeekOf] = useStickyState('', 'signal_weekOf');
-            const [assets, setAssets] = useStickyState({ content: '', resources: '', clients: '' }, 'signal_assets');
+            
+            // NEW: Assets State as Lists
+            const [assets, setAssets] = useStickyState({ 
+                content: [{ id: 1, text: '' }], 
+                resources: [{ id: 1, text: '' }], 
+                clients: [{ id: 1, text: '' }] 
+            }, 'signal_assets_list');
+
             const [noise, setNoise] = useStickyState({ loud: '', strategy: '' }, 'signal_noise');
             const [sprints, setSprints] = useStickyState(['', '', ''], 'signal_sprints');
             const [weekTheme, setWeekTheme] = useStickyState('', 'signal_weekTheme');
@@ -161,6 +168,35 @@
                 }
             };
 
+            // Asset Handlers (New)
+            const addAsset = (category) => {
+                setAssets(prev => ({
+                    ...prev,
+                    [category]: [...prev[category], { id: Date.now(), text: '' }]
+                }));
+            };
+
+            const updateAsset = (category, id, text) => {
+                setAssets(prev => ({
+                    ...prev,
+                    [category]: prev[category].map(item => item.id === id ? { ...item, text } : item)
+                }));
+            };
+
+            const deleteAsset = (category, id) => {
+                setAssets(prev => {
+                    const list = prev[category];
+                    if (list.length > 1) {
+                        return { ...prev, [category]: list.filter(item => item.id !== id) };
+                    } else {
+                        // If last item, just clear text
+                        return { 
+                            ...prev, 
+                            [category]: list.map(item => item.id === id ? { ...item, text: '' } : item) 
+                        };
+                    }
+                });
+            };
 
             const updateSprint = (index, text) => {
                 const newSprints = [...sprints];
@@ -428,23 +464,44 @@
                                     {/* Asset Audit */}
                                     <section>
                                         <h3 className="text-sm font-bold uppercase tracking-wider text-slate-400 mb-6">A. Asset Audit (The Evidence)</h3>
-                                        <div className="grid gap-6">
+                                        <div className="space-y-8">
                                         {[
                                             { label: 'Content Created', key: 'content' },
                                             { label: 'Resources Built', key: 'resources' },
                                             { label: 'Clients Contacted', key: 'clients' }
-                                        ].map((item) => (
-                                            <div key={item.key} className="relative">
-                                                <label className="absolute -top-2.5 left-3 bg-white px-1 text-xs font-semibold text-slate-500">
-                                                    {item.label}
-                                                </label>
-                                                <textarea
-                                                    value={assets[item.key]}
-                                                    onChange={(e) => setAssets({...assets, [item.key]: e.target.value})}
-                                                    rows={2}
-                                                    className="w-full border border-slate-200 rounded-lg px-4 py-3 text-sm focus:border-slate-900 focus:outline-none transition-colors print:border-slate-300"
-                                                    placeholder="Be ruthless. Thinking doesn't count."
-                                                />
+                                        ].map((section) => (
+                                            <div key={section.key} className="bg-slate-50 rounded-xl p-6 print:bg-transparent print:border print:border-slate-200">
+                                                <div className="flex items-baseline justify-between mb-4">
+                                                    <label className="text-xs font-bold uppercase tracking-wider text-slate-500">
+                                                        {section.label}
+                                                    </label>
+                                                    <button 
+                                                        onClick={() => addAsset(section.key)}
+                                                        className="text-xs font-medium text-blue-600 bg-blue-50 px-2 py-1 rounded hover:bg-blue-100 transition-colors flex items-center gap-1 no-print"
+                                                    >
+                                                        <Plus size={12} /> Add Item
+                                                    </button>
+                                                </div>
+                                                <div className="space-y-3">
+                                                    {assets[section.key].map((item) => (
+                                                        <div key={item.id} className="flex items-center gap-4 group">
+                                                            <div className="w-1.5 h-1.5 rounded-full bg-slate-300 mt-0.5"></div>
+                                                            <input 
+                                                                type="text" 
+                                                                value={item.text}
+                                                                onChange={(e) => updateAsset(section.key, item.id, e.target.value)}
+                                                                className="flex-1 py-2 bg-transparent border-b border-dashed border-slate-200 focus:border-solid focus:border-slate-400 focus:outline-none text-slate-700"
+                                                                placeholder={`Add ${section.label.toLowerCase()}...`}
+                                                            />
+                                                            <button 
+                                                                onClick={() => deleteAsset(section.key, item.id)}
+                                                                className="opacity-0 group-hover:opacity-100 text-slate-300 hover:text-red-400 transition-all no-print"
+                                                            >
+                                                                <X size={16} />
+                                                            </button>
+                                                        </div>
+                                                    ))}
+                                                </div>
                                             </div>
                                         ))}
                                         </div>
