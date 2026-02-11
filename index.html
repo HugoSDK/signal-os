@@ -45,7 +45,7 @@
         const X = (props) => <IconWrapper {...props}><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></IconWrapper>;
         const Calendar = (props) => <IconWrapper {...props}><rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect><line x1="16" y1="2" x2="16" y2="6"></line><line x1="8" y1="2" x2="8" y2="6"></line><line x1="3" y1="10" x2="21" y2="10"></line></IconWrapper>;
         const Activity = (props) => <IconWrapper {...props}><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline></IconWrapper>;
-        const Trash2 = (props) => <IconWrapper {...props}><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path><line x1="10" y1="11" x2="10" y2="17"></line><line x1="14" y1="11" x2="14" y2="17"></line></IconWrapper>;
+        const Trash2 = (props) => <IconWrapper {...props}><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path><line x1="10" y1="11" x2="10" y2="17"></line><line x1="14" y1="11" x2="14" y2="17"></line></IconWrapper>;
         const ArrowRight = (props) => <IconWrapper {...props}><line x1="5" y1="12" x2="19" y2="12"></line><polyline points="12 5 19 12 12 19"></polyline></IconWrapper>;
         const Plus = (props) => <IconWrapper {...props}><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></IconWrapper>;
         const RotateCcw = (props) => <IconWrapper {...props}><polyline points="1 4 1 10 7 10"></polyline><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"></path></IconWrapper>;
@@ -107,22 +107,38 @@
 
             // --- HANDLERS ---
             
-            // New Day Handler
+            // New Day Handler (Updated Logic)
             const startNewDay = () => {
-                if(window.confirm("Start a new day? This will clear today's tasks but keep your Weekly/Monthly goals.")) {
+                if(window.confirm("Start a new day? This will clear COMPLETED tasks and update the date. Unfinished tasks will remain.")) {
                     setDate(new Date().toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' }));
-                    setBigRock('');
-                    setBigRockDone(false);
-                    setAdditionalSignals([{ id: 1, text: '', done: false }]);
-                    setMaintenanceTasks([{ id: 1, text: '', done: false }, { id: 2, text: '', done: false }, { id: 3, text: '', done: false }]);
-                    setAntiGoals([{ id: 1, text: '', done: false }]);
+                    
+                    // Clear Big Rock only if done
+                    if(bigRockDone) {
+                        setBigRock('');
+                        setBigRockDone(false);
+                    }
+
+                    // Filter out completed items, keep incomplete ones
+                    const filterIncomplete = (list) => {
+                        const incomplete = list.filter(item => !item.done);
+                        return incomplete.length > 0 ? incomplete : [{ id: Date.now(), text: '', done: false }];
+                    };
+
+                    setAdditionalSignals(prev => filterIncomplete(prev));
+                    setMaintenanceTasks(prev => filterIncomplete(prev));
+                    setAntiGoals(prev => filterIncomplete(prev));
+                    
                     // We don't clear hardStop as that tends to be consistent
                 }
             };
 
             // Generic List Handlers (Daily)
+            
+            // Maintenance Handlers (Updated to be dynamic)
+            const addMaintenanceTask = () => setMaintenanceTasks(p => [...p, { id: Date.now(), text: '', done: false }]);
             const toggleMaintenance = (id) => setMaintenanceTasks(t => t.map(x => x.id === id ? { ...x, done: !x.done } : x));
             const updateMaintenance = (id, text) => setMaintenanceTasks(t => t.map(x => x.id === id ? { ...x, text } : x));
+            const deleteMaintenanceTask = (id) => setMaintenanceTasks(p => p.length > 1 ? p.filter(x => x.id !== id) : p.map(x => x.id === id ? { ...x, text: '' } : x));
             
             const addSignal = () => setAdditionalSignals(p => [...p, { id: Date.now(), text: '', done: false }]);
             const updateSignal = (id, text) => setAdditionalSignals(p => p.map(x => x.id === id ? { ...x, text } : x));
@@ -243,12 +259,19 @@
                                         </div>
                                     </section>
                                     <section>
-                                        <div className="flex items-baseline justify-between mb-4"><h3 className="text-sm font-bold uppercase tracking-wider text-slate-400">C. Containment Zone</h3><div className="flex items-center gap-2 text-xs font-medium text-slate-500"><span>Hard Stop:</span><input type="time" value={hardStop} onChange={(e) => setHardStop(e.target.value)} className="bg-slate-100 rounded px-1 focus:outline-none print:bg-transparent" /></div></div>
+                                        <div className="flex items-baseline justify-between mb-4">
+                                            <div className="flex items-center gap-4">
+                                                <h3 className="text-sm font-bold uppercase tracking-wider text-slate-400">C. Containment Zone</h3>
+                                                <div className="flex items-center gap-2 text-xs font-medium text-slate-500"><span>Hard Stop:</span><input type="time" value={hardStop} onChange={(e) => setHardStop(e.target.value)} className="bg-slate-100 rounded px-1 focus:outline-none print:bg-transparent" /></div>
+                                            </div>
+                                            <button onClick={addMaintenanceTask} className="text-xs font-medium text-slate-600 bg-slate-100 px-2 py-1 rounded hover:bg-slate-200 transition-colors flex items-center gap-1 no-print"><Plus size={12} /> Add Task</button>
+                                        </div>
                                         <div className="space-y-3">
                                             {maintenanceTasks.map((task) => (
                                                 <div key={task.id} className="flex items-center gap-4 group">
                                                     <button onClick={() => toggleMaintenance(task.id)} className={`w-6 h-6 rounded-md border-2 flex items-center justify-center transition-colors ${task.done ? 'bg-slate-900 border-slate-900 text-white' : 'border-slate-200 hover:border-slate-400'}`}>{task.done && <Check size={14} />}</button>
                                                     <input type="text" value={task.text} onChange={(e) => updateMaintenance(task.id, e.target.value)} className={`flex-1 py-2 bg-transparent border-b border-dashed border-slate-200 focus:border-solid focus:border-slate-400 focus:outline-none text-slate-700 ${task.done ? 'line-through text-slate-400' : ''}`} placeholder="Maintenance task..." />
+                                                    <button onClick={() => deleteMaintenanceTask(task.id)} className="opacity-0 group-hover:opacity-100 text-slate-300 hover:text-red-400 transition-all no-print"><X size={16} /></button>
                                                 </div>
                                             ))}
                                         </div>
