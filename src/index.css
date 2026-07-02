@@ -1,0 +1,126 @@
+:root {
+  --accent: #7c2d12;
+}
+body {
+  margin: 0;
+  background: #eae5da;
+  font-family: 'Inter', system-ui, sans-serif;
+  color: #1c1917;
+  -webkit-font-smoothing: antialiased;
+}
+* {
+  box-sizing: border-box;
+}
+input,
+button,
+textarea {
+  font-family: inherit;
+}
+input::placeholder,
+textarea::placeholder {
+  color: #b5ab9a;
+  opacity: 1;
+}
+
+/* --- tabs --- */
+.tab {
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0 0 3px;
+  font-size: 18.1px;
+  border-bottom: 1.5px solid transparent;
+  transition: color 0.15s;
+}
+.tab.active {
+  color: #1c1917;
+  font-weight: 600;
+  border-bottom-color: #1c1917;
+}
+.tab.inactive {
+  color: #8a8175;
+  font-weight: 500;
+}
+.tab.inactive:hover {
+  color: #1c1917;
+}
+
+/* --- check circles --- */
+.chk {
+  border-radius: 99px;
+  flex: none;
+  padding: 0;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.chk.done {
+  border: none;
+  background: var(--accent, #7c2d12);
+}
+.chk.todo {
+  border: 1.5px solid #b5ab9a;
+  background: transparent;
+  transition: border-color 0.15s;
+}
+.chk.todo:hover {
+  border-color: #7c2d12;
+}
+
+/* --- delete buttons (x) --- */
+.del {
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 2px;
+  display: flex;
+  color: #b5ab9a;
+  opacity: 0;
+  transition: all 0.15s;
+}
+.del.show {
+  opacity: 1;
+}
+.del:hover {
+  opacity: 1;
+  color: #7c2d12;
+}
+
+/* --- inputs --- */
+.uin {
+  background: transparent;
+  outline: none;
+  border: none;
+}
+.ul {
+  border-bottom: 1px solid #ded7c8;
+}
+.ul:focus {
+  border-bottom-color: #b5ab9a;
+}
+.ul-e {
+  border-bottom: 1px solid #eee8db;
+}
+.ul-e:focus {
+  border-bottom-color: #b5ab9a;
+}
+.ul-strong {
+  border-bottom: 1px solid #ded7c8;
+}
+.ul-strong:focus {
+  border-bottom-color: #8a8175;
+}
+
+/* --- text link buttons --- */
+.linkbtn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0;
+  color: #b5ab9a;
+  transition: color 0.15s;
+}
+.linkbtn:hover {
+  color: #7c2d12;
+}
