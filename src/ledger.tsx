@@ -32,6 +32,7 @@ export interface Item {
   id: number
   text: string
   done?: boolean
+  category?: 'work' | 'misc'
 }
 export interface DayRec {
   leadWho: string
@@ -44,7 +45,8 @@ export interface State {
   activeTab: string
   tasks: Item[]
   hardStop: string
-  newTask: string
+  newWorkTask: string
+  newMiscTask: string
   days: Record<string, DayRec>
   weekTheme: string
   priorities: string[]
@@ -81,7 +83,8 @@ export const DEFAULT_STATE: State = {
   activeTab: 'daily',
   tasks: [],
   hardStop: '18:00',
-  newTask: '',
+  newWorkTask: '',
+  newMiscTask: '',
   days: {},
   weekTheme: '',
   priorities: ['', '', ''],
@@ -116,7 +119,8 @@ export default class Ledger extends React.Component<LedgerProps, State> {
       }
     }
     this.state = Object.assign({}, DEFAULT_STATE, saved || {}, {
-      newTask: '',
+      newWorkTask: '',
+      newMiscTask: '',
       newObjective: '',
       newReview: '',
       newMilestone: '',
@@ -399,6 +403,7 @@ export default class Ledger extends React.Component<LedgerProps, State> {
       done: !!it.done,
       notDone: !it.done,
       text: it.text,
+      category: it.category,
       inputStyle: {
         flex: 1,
         minWidth: 0,
@@ -428,13 +433,20 @@ export default class Ledger extends React.Component<LedgerProps, State> {
     }))
   }
 
-  commit(listKey: 'tasks' | 'reviewItems' | 'milestones', draftKey: 'newTask' | 'newReview' | 'newMilestone') {
+  commit(
+    listKey: 'tasks' | 'reviewItems' | 'milestones',
+    draftKey: 'newWorkTask' | 'newMiscTask' | 'newReview' | 'newMilestone',
+    category?: 'work' | 'misc'
+  ) {
     return (e: React.KeyboardEvent) => {
       if (e.key === 'Enter' && (this.state[draftKey] as string).trim()) {
         this.setState(
           (s) =>
             ({
-              [listKey]: [...(s[listKey] as Item[]), { id: Date.now(), text: (s[draftKey] as string).trim(), done: false }],
+              [listKey]: [
+                ...(s[listKey] as Item[]),
+                { id: Date.now(), text: (s[draftKey] as string).trim(), done: false, ...(category ? { category } : {}) },
+              ],
               [draftKey]: '',
             }) as any
         )
@@ -466,6 +478,68 @@ export default class Ledger extends React.Component<LedgerProps, State> {
           <line x1="6" y1="6" x2="18" y2="18" />
         </svg>
       </button>
+    )
+  }
+
+  moveTo(id: number, category: 'work' | 'misc') {
+    this.setState((s) => ({ tasks: s.tasks.map((x) => (x.id === id ? { ...x, category } : x)) }))
+  }
+
+  renderTaskSection(opts: {
+    title: string
+    rows: ReturnType<Ledger['listRows']>
+    variant: 'work' | 'misc'
+    draftKey: 'newWorkTask' | 'newMiscTask'
+  }) {
+    const { title, rows, variant, draftKey } = opts
+    const headerColor = variant === 'work' ? 'var(--accent,#7c2d12)' : '#8a8175'
+    const otherCat: 'work' | 'misc' = variant === 'work' ? 'misc' : 'work'
+    const moveText = variant === 'work' ? '→ misc' : '→ work'
+    const placeholder = variant === 'work' ? 'add a work task, press Enter…' : 'add a misc task, press Enter…'
+    return (
+      <div style={variant === 'misc' ? css('margin-top:22px') : undefined}>
+        <div style={css('font-size:15.2px;font-weight:600;letter-spacing:0.14em;color:' + headerColor + ';margin-bottom:10px')}>{title}</div>
+        <div style={css('display:flex;flex-direction:column')}>
+          {rows.map((row) => {
+            const inputStyle: React.CSSProperties =
+              variant === 'misc'
+                ? { ...row.inputStyle, fontSize: 13.5, ...(row.done ? {} : { color: '#57534e', fontWeight: 400 }) }
+                : row.inputStyle
+            return (
+              <div key={row.key} style={css('display:flex;gap:12px;align-items:center;padding:4px 0;border-bottom:1px solid #eae4d8')}>
+                {this.check(row.done, row.toggle, 18, row.done ? 'Mark not done' : 'Mark done')}
+                <input type="text" value={row.text} onChange={row.onChange} placeholder="…" className="uin" style={inputStyle} />
+                <button
+                  onClick={() => this.moveTo(row.key, otherCat)}
+                  className="linkbtn"
+                  aria-label={'Move to ' + otherCat}
+                  style={css('font-size:12px;flex:none;letter-spacing:0.04em')}
+                >
+                  {moveText}
+                </button>
+                {this.delBtn(row.del, 'Delete task')}
+              </div>
+            )
+          })}
+          <div style={css('display:flex;gap:12px;align-items:center;padding:8px 0')}>
+            <span style={css('width:18px;height:18px;display:flex;align-items:center;justify-content:center;color:#b5ab9a;flex:none')}>
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                <line x1="12" y1="5" x2="12" y2="19" />
+                <line x1="5" y1="12" x2="19" y2="12" />
+              </svg>
+            </span>
+            <input
+              type="text"
+              value={this.state[draftKey] as string}
+              onChange={(e) => this.setState({ [draftKey]: e.target.value } as any)}
+              onKeyDown={this.commit('tasks', draftKey, variant)}
+              placeholder={placeholder}
+              className="uin"
+              style={css("flex:1;min-width:0;font-family:'Source Serif 4',serif;font-style:italic;font-size:20.3px;color:#44403c;padding:4px 0")}
+            />
+          </div>
+        </div>
+      </div>
     )
   }
 
@@ -513,6 +587,8 @@ export default class Ledger extends React.Component<LedgerProps, State> {
     const isMonthly = s.activeTab === 'monthly'
 
     const taskRows = this.listRows('tasks')
+    const workRows = taskRows.filter((r) => r.category === 'work')
+    const miscRows = taskRows.filter((r) => r.category !== 'work')
     const milestoneRows = this.listRows('milestones')
     const leadDots = this.dots('leadDone')
     const postDots = this.dots('postDone')
@@ -586,33 +662,8 @@ export default class Ledger extends React.Component<LedgerProps, State> {
               <div style={css('display:grid;grid-template-columns:1.2fr 1fr')}>
                 {/* today's list */}
                 <div style={css('padding:26px 32px 32px 40px;border-right:1px solid #e3ddd0')}>
-                  <div style={css('font-size:15.2px;font-weight:600;letter-spacing:0.14em;color:#8a8175;margin-bottom:10px')}>TODAY'S LIST</div>
-                  <div style={css('display:flex;flex-direction:column')}>
-                    {taskRows.map((row) => (
-                      <div key={row.key} style={css('display:flex;gap:12px;align-items:center;padding:4px 0;border-bottom:1px solid #eae4d8')}>
-                        {this.check(row.done, row.toggle, 18, row.done ? 'Mark not done' : 'Mark done')}
-                        <input type="text" value={row.text} onChange={row.onChange} placeholder="…" className="uin" style={row.inputStyle} />
-                        {this.delBtn(row.del, 'Delete task')}
-                      </div>
-                    ))}
-                    <div style={css('display:flex;gap:12px;align-items:center;padding:8px 0')}>
-                      <span style={css('width:18px;height:18px;display:flex;align-items:center;justify-content:center;color:#b5ab9a;flex:none')}>
-                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-                          <line x1="12" y1="5" x2="12" y2="19" />
-                          <line x1="5" y1="12" x2="19" y2="12" />
-                        </svg>
-                      </span>
-                      <input
-                        type="text"
-                        value={s.newTask}
-                        onChange={(e) => this.setState({ newTask: e.target.value })}
-                        onKeyDown={this.commit('tasks', 'newTask')}
-                        placeholder="add a line, press Enter…"
-                        className="uin"
-                        style={css("flex:1;min-width:0;font-family:'Source Serif 4',serif;font-style:italic;font-size:20.3px;color:#44403c;padding:4px 0")}
-                      />
-                    </div>
-                  </div>
+                  {this.renderTaskSection({ title: 'WORK', rows: workRows, variant: 'work', draftKey: 'newWorkTask' })}
+                  {this.renderTaskSection({ title: 'MISC', rows: miscRows, variant: 'misc', draftKey: 'newMiscTask' })}
                   <div style={css('margin-top:24px;padding-top:14px;border-top:1px solid #e3ddd0;display:flex;justify-content:space-between;align-items:center;font-size:16.7px;color:#8a8175')}>
                     <span>{s.tasks.length === 0 ? 'Nothing planned yet' : doneCount + ' of ' + s.tasks.length + ' complete'}</span>
                     <div style={css('display:flex;align-items:center;gap:14px')}>
