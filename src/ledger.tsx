@@ -59,6 +59,7 @@ export interface State {
   monthCorr: string
   revGoal: string
   revMadeByMonth: Record<string, string>
+  dayTag: string
   weekTag: string
   monthTag: string
   pendingRollover: 'week' | 'month' | null
@@ -95,6 +96,7 @@ export const DEFAULT_STATE: State = {
   monthCorr: '',
   revGoal: '5000',
   revMadeByMonth: {},
+  dayTag: '',
   weekTag: '',
   monthTag: '',
   pendingRollover: null,
@@ -124,8 +126,17 @@ export default class Ledger extends React.Component<LedgerProps, State> {
 
   dismissed = new Set<string>()
 
+  onVisible = () => {
+    if (typeof document !== 'undefined' && document.visibilityState === 'visible') this.detectRollover()
+  }
+
   componentDidMount() {
     this.detectRollover()
+    if (typeof document !== 'undefined') document.addEventListener('visibilitychange', this.onVisible)
+  }
+
+  componentWillUnmount() {
+    if (typeof document !== 'undefined') document.removeEventListener('visibilitychange', this.onVisible)
   }
 
   componentDidUpdate() {
@@ -138,6 +149,24 @@ export default class Ledger extends React.Component<LedgerProps, State> {
   }
 
   /* ---------- period rollover ---------- */
+
+  /** Silent daily rollover: on the first open of a new day, carry unfinished
+   * tasks forward and clear the completed ones. Legacy state (no dayTag) just
+   * initialises to today so nothing is cleared on first launch. */
+  detectDayRollover() {
+    const today = this.dateKey(new Date())
+    const s = this.state
+    if (!s.dayTag) {
+      this.setState({ dayTag: today })
+      return
+    }
+    if (s.dayTag !== today) {
+      this.setState((prev) => ({
+        tasks: prev.tasks.filter((t) => !t.done),
+        dayTag: today,
+      }))
+    }
+  }
 
   weekTag(d: Date) {
     const t = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()))
@@ -161,6 +190,7 @@ export default class Ledger extends React.Component<LedgerProps, State> {
   }
 
   detectRollover() {
+    this.detectDayRollover()
     if (this.state.pendingRollover) return
     const now = new Date()
     const wTag = this.weekTag(now)
