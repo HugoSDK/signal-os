@@ -3,7 +3,7 @@ import type { Session } from '@supabase/supabase-js'
 import { supabase } from './lib/supabase'
 import Ledger, { type State } from './ledger'
 import Auth from './components/Auth'
-import { loadInitialState, makePersister, archivePeriod } from './lib/sync'
+import { loadInitialState, makePersister, archivePeriod, loadHistory } from './lib/sync'
 
 function Splash({ label }: { label: string }) {
   return (
@@ -86,6 +86,8 @@ export default function App() {
   }, [userId])
 
   const persist = useMemo(() => (userId ? makePersister(userId) : undefined), [userId])
+  // Stable identity: History refetches whenever this prop's identity changes.
+  const fetchHistory = useMemo(() => (userId ? () => loadHistory(userId) : undefined), [userId])
 
   if (session === undefined) return <Splash label="Loading…" />
   if (!session) return <Auth />
@@ -99,6 +101,7 @@ export default function App() {
         onPersist={persist}
         userId={userId}
         onArchive={(row) => archivePeriod(userId, row)}
+        onLoadHistory={fetchHistory}
       />
       <AccountBar email={session.user.email ?? ''} />
     </>

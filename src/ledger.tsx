@@ -1,5 +1,7 @@
 import React from 'react'
 import RolloverPrompt from './components/RolloverPrompt'
+import History from './components/History'
+import type { ArchivedPeriod } from './lib/sync'
 
 /* ------------------------------------------------------------------ *
  * Faithful port of the Signal Ledger export (was a "DC" React class). *
@@ -66,6 +68,8 @@ export interface State {
   weekTag: string
   monthTag: string
   pendingRollover: 'week' | 'month' | null
+  /** Set when 'Archive & start fresh' was blocked because the DB write failed. */
+  archiveError: 'week' | 'month' | null
 }
 
 export interface LedgerProps {
@@ -76,7 +80,9 @@ export interface LedgerProps {
   /** Called after every state change (localStorage is always written; this is for remote sync). */
   onPersist?: (state: State) => void
   /** Persist a period snapshot to history (rollover "archive"). */
-  onArchive?: (row: { period_type: 'week' | 'month'; period_tag: string; snapshot: Record<string, unknown> }) => void
+  onArchive?: (row: { period_type: 'week' | 'month'; period_tag: string; snapshot: Record<string, unknown> }) => Promise<boolean>
+  /** Lazily load archived periods for the History tab. */
+  onLoadHistory?: () => Promise<ArchivedPeriod[]>
   userId?: string
 }
 
@@ -105,12 +111,25 @@ export const DEFAULT_STATE: State = {
   weekTag: '',
   monthTag: '',
   pendingRollover: null,
+  archiveError: null,
 }
 
 const EMPTY_DAY: DayRec = { leadWho: '', leadDone: false, postWhat: '', postDone: false, gratitude: ['', '', ''] }
 
 /* Fixed daily anchors — edit this list to change what shows on the Daily tab. */
 const MANTRAS = ['Do hard things', 'How bad do you want it?']
+
+/* Period-tag → display label. Module-level so History can reuse them. */
+export function weekLabelFromTag(tag: string) {
+  const wk = tag.split('-W')[1]
+  return wk ? 'Week ' + String(Number(wk)) : tag
+}
+
+export function monthLabelFromTag(tag: string) {
+  const [y, m] = tag.split('-')
+  if (!y || !m) return tag
+  return new Date(Number(y), Number(m) - 1, 1).toLocaleDateString('en-GB', { month: 'long', year: 'numeric' })
+}
 
 export default class Ledger extends React.Component<LedgerProps, State> {
   constructor(props: LedgerProps) {
@@ -131,6 +150,7 @@ export default class Ledger extends React.Component<LedgerProps, State> {
       newReview: '',
       newMilestone: '',
       pendingRollover: null,
+      archiveError: null,
     })
   }
 
@@ -196,7 +216,61 @@ export default class Ledger extends React.Component<LedgerProps, State> {
   }
 
   monthHasContent(s: State) {
-    return !!(s.monthFocus.trim() || s.milestones.length || s.monthObs.trim() || s.monthCorr.trim())
+    return !!(
+      s.monthFocus.trim() ||
+      s.milestones.length ||
+      s.monthObs.trim() ||
+      s.monthCorr.trim() ||
+      (s.revMadeByMonth[s.monthTag] || '').trim()
+    )
+  }
+
+  /* ---------- archiving ----------
+   * Archiving happens at rollover *detection*, not on a button press, so a
+   * period is recorded no matter which prompt button is used (or if the
+   * prompt is dismissed / never seen). archivePeriod upserts on
+   * user+type+tag, so repeat calls are idempotent. */
+
+  /** Whether the pending period's snapshot reached the DB. Null = not attempted. */
+  archivedOk: { week: boolean | null; month: boolean | null } = { week: null, month: null }
+
+  archiveWeek(s: State) {
+    this.archivedOk.week = null
+    const p = this.props.onArchive?.({
+      period_type: 'week',
+      period_tag: s.weekTag,
+      snapshot: { weekTheme: s.weekTheme, priorities: s.priorities, reviewItems: s.reviewItems },
+    })
+    if (!p) {
+      this.archivedOk.week = false
+      return
+    }
+    Promise.resolve(p).then((ok) => {
+      this.archivedOk.week = ok
+    })
+  }
+
+  archiveMonth(s: State) {
+    this.archivedOk.month = null
+    const p = this.props.onArchive?.({
+      period_type: 'month',
+      period_tag: s.monthTag,
+      snapshot: {
+        monthFocus: s.monthFocus,
+        milestones: s.milestones,
+        monthObs: s.monthObs,
+        monthCorr: s.monthCorr,
+        revGoal: s.revGoal,
+        revMade: s.revMadeByMonth[s.monthTag] ?? '',
+      },
+    })
+    if (!p) {
+      this.archivedOk.month = false
+      return
+    }
+    Promise.resolve(p).then((ok) => {
+      this.archivedOk.month = ok
+    })
   }
 
   detectRollover() {
@@ -211,12 +285,14 @@ export default class Ledger extends React.Component<LedgerProps, State> {
 
     if (!s.weekTag) patch.weekTag = wTag
     else if (s.weekTag !== wTag) {
+      if (this.weekHasContent(s)) this.archiveWeek(s)
       if (this.weekHasContent(s) && !this.dismissed.has('week:' + wTag)) pending = 'week'
       else patch.weekTag = wTag
     }
 
     if (!s.monthTag) patch.monthTag = mTag
     else if (s.monthTag !== mTag) {
+      if (this.monthHasContent(s)) this.archiveMonth(s)
       if (this.monthHasContent(s) && !this.dismissed.has('month:' + mTag)) {
         if (!pending) pending = 'month'
       } else patch.monthTag = mTag
@@ -226,64 +302,53 @@ export default class Ledger extends React.Component<LedgerProps, State> {
     if (Object.keys(patch).length) this.setState(patch)
   }
 
+  /* The snapshot was already written at detection time. "Archive & start
+   * fresh" only *clears* — and it refuses to clear anything the DB hasn't
+   * confirmed, so a failed write can never blank the board. */
   resolveWeek(action: 'archive' | 'keep') {
     const wTag = this.weekTag(new Date())
-    const s = this.state
     if (action === 'archive') {
-      this.props.onArchive?.({
-        period_type: 'week',
-        period_tag: s.weekTag,
-        snapshot: { weekTheme: s.weekTheme, priorities: s.priorities, reviewItems: s.reviewItems },
-      })
+      if (this.archivedOk.week !== true) {
+        this.setState({ archiveError: 'week' })
+        return
+      }
       this.setState(
-        { weekTheme: '', priorities: ['', '', ''], reviewItems: [], weekTag: wTag, pendingRollover: null },
+        { weekTheme: '', priorities: ['', '', ''], reviewItems: [], weekTag: wTag, pendingRollover: null, archiveError: null },
         () => this.detectRollover()
       )
     } else {
-      this.setState({ weekTag: wTag, pendingRollover: null }, () => this.detectRollover())
+      this.setState({ weekTag: wTag, pendingRollover: null, archiveError: null }, () => this.detectRollover())
     }
   }
 
   resolveMonth(action: 'archive' | 'keep') {
     const mTag = this.monthTag(new Date())
-    const s = this.state
     if (action === 'archive') {
-      this.props.onArchive?.({
-        period_type: 'month',
-        period_tag: s.monthTag,
-        snapshot: {
-          monthFocus: s.monthFocus,
-          milestones: s.milestones,
-          monthObs: s.monthObs,
-          monthCorr: s.monthCorr,
-          revGoal: s.revGoal,
-          revMade: s.revMadeByMonth[s.monthTag] ?? '',
-        },
-      })
+      if (this.archivedOk.month !== true) {
+        this.setState({ archiveError: 'month' })
+        return
+      }
       this.setState(
-        { monthFocus: '', milestones: [], monthObs: '', monthCorr: '', monthTag: mTag, pendingRollover: null },
+        { monthFocus: '', milestones: [], monthObs: '', monthCorr: '', monthTag: mTag, pendingRollover: null, archiveError: null },
         () => this.detectRollover()
       )
     } else {
-      this.setState({ monthTag: mTag, pendingRollover: null }, () => this.detectRollover())
+      this.setState({ monthTag: mTag, pendingRollover: null, archiveError: null }, () => this.detectRollover())
     }
   }
 
   dismissRollover(kind: 'week' | 'month') {
     const tag = kind === 'week' ? this.weekTag(new Date()) : this.monthTag(new Date())
     this.dismissed.add(kind + ':' + tag)
-    this.setState({ pendingRollover: null })
+    this.setState({ pendingRollover: null, archiveError: null })
   }
 
   weekLabelFromTag(tag: string) {
-    const wk = tag.split('-W')[1]
-    return wk ? 'Week ' + String(Number(wk)) : tag
+    return weekLabelFromTag(tag)
   }
 
   monthLabelFromTag(tag: string) {
-    const [y, m] = tag.split('-')
-    if (!y || !m) return tag
-    return new Date(Number(y), Number(m) - 1, 1).toLocaleDateString('en-GB', { month: 'long', year: 'numeric' })
+    return monthLabelFromTag(tag)
   }
 
   renderRollover() {
@@ -307,6 +372,7 @@ export default class Ledger extends React.Component<LedgerProps, State> {
           onArchive={() => this.resolveWeek('archive')}
           onKeep={() => this.resolveWeek('keep')}
           onLater={() => this.dismissRollover('week')}
+          error={s.archiveError === 'week'}
         />
       )
     }
@@ -328,6 +394,7 @@ export default class Ledger extends React.Component<LedgerProps, State> {
         onArchive={() => this.resolveMonth('archive')}
         onKeep={() => this.resolveMonth('keep')}
         onLater={() => this.dismissRollover('month')}
+        error={s.archiveError === 'month'}
       />
     )
   }
@@ -584,11 +651,13 @@ export default class Ledger extends React.Component<LedgerProps, State> {
       daily: now.toLocaleDateString('en-GB', { weekday: 'long', month: 'long', day: 'numeric' }),
       weekly: 'Week ' + this.isoWeek(now),
       monthly: now.toLocaleDateString('en-GB', { month: 'long', year: 'numeric' }),
+      history: 'History',
     }
     const metas: Dict = {
       daily: 'Week ' + this.isoWeek(now) + ' · ' + now.getFullYear(),
       weekly: this.weekRange(),
       monthly: 'Month ' + (now.getMonth() + 1) + ' of 12',
+      history: 'Past weeks & months',
     }
 
     const doneCount = s.tasks.filter((x) => x.done).length
@@ -605,6 +674,7 @@ export default class Ledger extends React.Component<LedgerProps, State> {
     const isDaily = s.activeTab === 'daily'
     const isWeekly = s.activeTab === 'weekly'
     const isMonthly = s.activeTab === 'monthly'
+    const isHistory = s.activeTab === 'history'
 
     const taskRows = this.listRows('tasks')
     const workRows = taskRows.filter((r) => r.category === 'work')
@@ -613,7 +683,7 @@ export default class Ledger extends React.Component<LedgerProps, State> {
     const leadDots = this.dots('leadDone')
     const postDots = this.dots('postDone')
 
-    const tabs = ['Daily', 'Weekly', 'Monthly'].map((label) => {
+    const tabs = ['Daily', 'Weekly', 'Monthly', 'History'].map((label) => {
       const id = label.toLowerCase()
       return { label, active: s.activeTab === id, onClick: () => this.setState({ activeTab: id }, () => this.detectRollover()) }
     })
@@ -939,6 +1009,9 @@ export default class Ledger extends React.Component<LedgerProps, State> {
                 </div>
               </div>
             )}
+
+            {/* ---------- HISTORY ---------- */}
+            {isHistory && <History load={this.props.onLoadHistory} />}
           </div>
         </div>
       </div>
