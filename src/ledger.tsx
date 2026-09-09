@@ -50,6 +50,7 @@ export interface State {
   days: Record<string, DayRec>
   weekTheme: string
   priorities: string[]
+  newPriority: string
   objectives: Item[]
   newObjective: string
   reviewItems: Item[]
@@ -88,6 +89,7 @@ export const DEFAULT_STATE: State = {
   days: {},
   weekTheme: '',
   priorities: ['', '', ''],
+  newPriority: '',
   objectives: [],
   newObjective: '',
   reviewItems: [],
@@ -122,6 +124,7 @@ export default class Ledger extends React.Component<LedgerProps, State> {
       newWorkTask: '',
       newMiscTask: '',
       newObjective: '',
+      newPriority: '',
       newReview: '',
       newMilestone: '',
       pendingRollover: null,
@@ -454,6 +457,20 @@ export default class Ledger extends React.Component<LedgerProps, State> {
     }
   }
 
+  commitText(listKey: 'priorities', draftKey: 'newPriority') {
+    return (e: React.KeyboardEvent) => {
+      if (e.key === 'Enter' && (this.state[draftKey] as string).trim()) {
+        this.setState(
+          (s) =>
+            ({
+              [listKey]: [...(s[listKey] as string[]), (s[draftKey] as string).trim()],
+              [draftKey]: '',
+            }) as any
+        )
+      }
+    }
+  }
+
   /* ---------- small render helpers ---------- */
 
   check(done: boolean, onClick: () => void, size: number, label: string) {
@@ -761,7 +778,7 @@ export default class Ledger extends React.Component<LedgerProps, State> {
                   />
                   <div style={css('display:flex;flex-direction:column;margin-top:18px')}>
                     {s.priorities.map((text, idx) => (
-                      <div key={idx} style={css('display:flex;gap:14px;align-items:baseline;padding:6px 0;border-bottom:1px solid #eae4d8')}>
+                      <div key={idx} style={css('display:flex;gap:14px;align-items:center;padding:6px 0;border-bottom:1px solid #eae4d8')}>
                         <span style={css("font-family:'Source Serif 4',serif;font-size:21.8px;font-weight:600;color:var(--accent,#7c2d12);width:16px;flex:none")}>{idx + 1}</span>
                         <input
                           type="text"
@@ -771,8 +788,26 @@ export default class Ledger extends React.Component<LedgerProps, State> {
                           className="uin"
                           style={css('flex:1;min-width:0;font-size:20.3px;color:#1c1917;font-weight:500;padding:4px 0')}
                         />
+                        {this.delBtn(() => this.setState((prev) => ({ priorities: prev.priorities.filter((_, i) => i !== idx) })), 'Delete priority', true)}
                       </div>
                     ))}
+                    <div style={css('display:flex;gap:14px;align-items:center;padding:8px 0')}>
+                      <span style={css('width:16px;height:18px;display:flex;align-items:center;justify-content:center;color:#b5ab9a;flex:none')}>
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                          <line x1="12" y1="5" x2="12" y2="19" />
+                          <line x1="5" y1="12" x2="19" y2="12" />
+                        </svg>
+                      </span>
+                      <input
+                        type="text"
+                        value={s.newPriority}
+                        onChange={(e) => this.setState({ newPriority: e.target.value })}
+                        onKeyDown={this.commitText('priorities', 'newPriority')}
+                        placeholder="add a priority, press Enter…"
+                        className="uin"
+                        style={css("flex:1;min-width:0;font-family:'Source Serif 4',serif;font-style:italic;font-size:20.3px;color:#44403c;padding:4px 0")}
+                      />
+                    </div>
                   </div>
                 </div>
 
