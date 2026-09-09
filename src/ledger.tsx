@@ -109,6 +109,9 @@ export const DEFAULT_STATE: State = {
 
 const EMPTY_DAY: DayRec = { leadWho: '', leadDone: false, postWhat: '', postDone: false, gratitude: ['', '', ''] }
 
+/* Fixed daily anchors — edit this list to change what shows on the Daily tab. */
+const MANTRAS = ['Do hard things', 'How bad do you want it?']
+
 export default class Ledger extends React.Component<LedgerProps, State> {
   constructor(props: LedgerProps) {
     super(props)
@@ -672,6 +675,17 @@ export default class Ledger extends React.Component<LedgerProps, State> {
                   />
                 </div>
               </div>
+              {/* values & mantras — daily only */}
+              {isDaily && (
+                <div style={css('display:flex;flex-wrap:wrap;align-items:baseline;gap:14px;padding:13px 0 15px;border-top:1px solid #e3ddd0')}>
+                  {MANTRAS.map((m, idx) => (
+                    <span key={m} style={css('display:flex;align-items:baseline;gap:14px;max-width:100%')}>
+                      {idx > 0 && <span style={css('font-size:20.3px;color:#b5ab9a;flex:none')}>·</span>}
+                      <span style={css("font-family:'Source Serif 4',serif;font-style:italic;font-size:20.3px;color:#8a8175")}>{m}</span>
+                    </span>
+                  ))}
+                </div>
+              )}
             </div>
 
             {/* ---------- DAILY ---------- */}
