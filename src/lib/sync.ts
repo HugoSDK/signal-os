@@ -82,10 +82,37 @@ export interface ArchiveRow {
   snapshot: Record<string, unknown>
 }
 
-/** Upsert a period snapshot into history (idempotent on user+type+tag). */
-export async function archivePeriod(userId: string, row: ArchiveRow) {
+/** A past period as stored in history. `snapshot` shape differs by period_type. */
+export interface ArchivedPeriod extends ArchiveRow {
+  archived_at: string
+}
+
+/**
+ * Upsert a period snapshot into history (idempotent on user+type+tag).
+ * Returns whether the write succeeded — callers must not clear the live
+ * period unless this resolved true.
+ */
+export async function archivePeriod(userId: string, row: ArchiveRow): Promise<boolean> {
   const { error } = await supabase
     .from('period_archive')
     .upsert({ user_id: userId, ...row }, { onConflict: 'user_id,period_type,period_tag' })
-  if (error) console.warn('archivePeriod error', error.message)
+  if (error) {
+    console.warn('archivePeriod error', error.message)
+    return false
+  }
+  return true
+}
+
+/** Read back every archived period for a user, newest first. */
+export async function loadHistory(userId: string): Promise<ArchivedPeriod[]> {
+  const { data, error } = await supabase
+    .from('period_archive')
+    .select('period_type, period_tag, snapshot, archived_at')
+    .eq('user_id', userId)
+    .order('archived_at', { ascending: false })
+  if (error) {
+    console.warn('loadHistory error', error.message)
+    throw new Error(error.message)
+  }
+  return (data ?? []) as ArchivedPeriod[]
 }

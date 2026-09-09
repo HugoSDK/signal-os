@@ -1,5 +1,7 @@
 import React from 'react'
 import RolloverPrompt from './components/RolloverPrompt'
+import History from './components/History'
+import type { ArchivedPeriod } from './lib/sync'
 
 /* ------------------------------------------------------------------ *
  * Faithful port of the Signal Ledger export (was a "DC" React class). *
@@ -32,6 +34,7 @@ export interface Item {
   id: number
   text: string
   done?: boolean
+  category?: 'work' | 'misc'
 }
 export interface DayRec {
   leadWho: string
@@ -44,10 +47,12 @@ export interface State {
   activeTab: string
   tasks: Item[]
   hardStop: string
-  newTask: string
+  newWorkTask: string
+  newMiscTask: string
   days: Record<string, DayRec>
   weekTheme: string
   priorities: string[]
+  newPriority: string
   objectives: Item[]
   newObjective: string
   reviewItems: Item[]
@@ -59,9 +64,12 @@ export interface State {
   monthCorr: string
   revGoal: string
   revMadeByMonth: Record<string, string>
+  dayTag: string
   weekTag: string
   monthTag: string
   pendingRollover: 'week' | 'month' | null
+  /** Set when 'Archive & start fresh' was blocked because the DB write failed. */
+  archiveError: 'week' | 'month' | null
 }
 
 export interface LedgerProps {
@@ -72,7 +80,9 @@ export interface LedgerProps {
   /** Called after every state change (localStorage is always written; this is for remote sync). */
   onPersist?: (state: State) => void
   /** Persist a period snapshot to history (rollover "archive"). */
-  onArchive?: (row: { period_type: 'week' | 'month'; period_tag: string; snapshot: Record<string, unknown> }) => void
+  onArchive?: (row: { period_type: 'week' | 'month'; period_tag: string; snapshot: Record<string, unknown> }) => Promise<boolean>
+  /** Lazily load archived periods for the History tab. */
+  onLoadHistory?: () => Promise<ArchivedPeriod[]>
   userId?: string
 }
 
@@ -80,10 +90,12 @@ export const DEFAULT_STATE: State = {
   activeTab: 'daily',
   tasks: [],
   hardStop: '18:00',
-  newTask: '',
+  newWorkTask: '',
+  newMiscTask: '',
   days: {},
   weekTheme: '',
   priorities: ['', '', ''],
+  newPriority: '',
   objectives: [],
   newObjective: '',
   reviewItems: [],
@@ -95,12 +107,29 @@ export const DEFAULT_STATE: State = {
   monthCorr: '',
   revGoal: '5000',
   revMadeByMonth: {},
+  dayTag: '',
   weekTag: '',
   monthTag: '',
   pendingRollover: null,
+  archiveError: null,
 }
 
 const EMPTY_DAY: DayRec = { leadWho: '', leadDone: false, postWhat: '', postDone: false, gratitude: ['', '', ''] }
+
+/* Fixed daily anchors — edit this list to change what shows on the Daily tab. */
+const MANTRAS = ['Do hard things', 'How bad do you want it?']
+
+/* Period-tag → display label. Module-level so History can reuse them. */
+export function weekLabelFromTag(tag: string) {
+  const wk = tag.split('-W')[1]
+  return wk ? 'Week ' + String(Number(wk)) : tag
+}
+
+export function monthLabelFromTag(tag: string) {
+  const [y, m] = tag.split('-')
+  if (!y || !m) return tag
+  return new Date(Number(y), Number(m) - 1, 1).toLocaleDateString('en-GB', { month: 'long', year: 'numeric' })
+}
 
 export default class Ledger extends React.Component<LedgerProps, State> {
   constructor(props: LedgerProps) {
@@ -114,18 +143,30 @@ export default class Ledger extends React.Component<LedgerProps, State> {
       }
     }
     this.state = Object.assign({}, DEFAULT_STATE, saved || {}, {
-      newTask: '',
+      newWorkTask: '',
+      newMiscTask: '',
       newObjective: '',
+      newPriority: '',
       newReview: '',
       newMilestone: '',
       pendingRollover: null,
+      archiveError: null,
     })
   }
 
   dismissed = new Set<string>()
 
+  onVisible = () => {
+    if (typeof document !== 'undefined' && document.visibilityState === 'visible') this.detectRollover()
+  }
+
   componentDidMount() {
     this.detectRollover()
+    if (typeof document !== 'undefined') document.addEventListener('visibilitychange', this.onVisible)
+  }
+
+  componentWillUnmount() {
+    if (typeof document !== 'undefined') document.removeEventListener('visibilitychange', this.onVisible)
   }
 
   componentDidUpdate() {
@@ -138,6 +179,24 @@ export default class Ledger extends React.Component<LedgerProps, State> {
   }
 
   /* ---------- period rollover ---------- */
+
+  /** Silent daily rollover: on the first open of a new day, carry unfinished
+   * tasks forward and clear the completed ones. Legacy state (no dayTag) just
+   * initialises to today so nothing is cleared on first launch. */
+  detectDayRollover() {
+    const today = this.dateKey(new Date())
+    const s = this.state
+    if (!s.dayTag) {
+      this.setState({ dayTag: today })
+      return
+    }
+    if (s.dayTag !== today) {
+      this.setState((prev) => ({
+        tasks: prev.tasks.filter((t) => !t.done),
+        dayTag: today,
+      }))
+    }
+  }
 
   weekTag(d: Date) {
     const t = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()))
@@ -157,10 +216,65 @@ export default class Ledger extends React.Component<LedgerProps, State> {
   }
 
   monthHasContent(s: State) {
-    return !!(s.monthFocus.trim() || s.milestones.length || s.monthObs.trim() || s.monthCorr.trim())
+    return !!(
+      s.monthFocus.trim() ||
+      s.milestones.length ||
+      s.monthObs.trim() ||
+      s.monthCorr.trim() ||
+      (s.revMadeByMonth[s.monthTag] || '').trim()
+    )
+  }
+
+  /* ---------- archiving ----------
+   * Archiving happens at rollover *detection*, not on a button press, so a
+   * period is recorded no matter which prompt button is used (or if the
+   * prompt is dismissed / never seen). archivePeriod upserts on
+   * user+type+tag, so repeat calls are idempotent. */
+
+  /** Whether the pending period's snapshot reached the DB. Null = not attempted. */
+  archivedOk: { week: boolean | null; month: boolean | null } = { week: null, month: null }
+
+  archiveWeek(s: State) {
+    this.archivedOk.week = null
+    const p = this.props.onArchive?.({
+      period_type: 'week',
+      period_tag: s.weekTag,
+      snapshot: { weekTheme: s.weekTheme, priorities: s.priorities, reviewItems: s.reviewItems },
+    })
+    if (!p) {
+      this.archivedOk.week = false
+      return
+    }
+    Promise.resolve(p).then((ok) => {
+      this.archivedOk.week = ok
+    })
+  }
+
+  archiveMonth(s: State) {
+    this.archivedOk.month = null
+    const p = this.props.onArchive?.({
+      period_type: 'month',
+      period_tag: s.monthTag,
+      snapshot: {
+        monthFocus: s.monthFocus,
+        milestones: s.milestones,
+        monthObs: s.monthObs,
+        monthCorr: s.monthCorr,
+        revGoal: s.revGoal,
+        revMade: s.revMadeByMonth[s.monthTag] ?? '',
+      },
+    })
+    if (!p) {
+      this.archivedOk.month = false
+      return
+    }
+    Promise.resolve(p).then((ok) => {
+      this.archivedOk.month = ok
+    })
   }
 
   detectRollover() {
+    this.detectDayRollover()
     if (this.state.pendingRollover) return
     const now = new Date()
     const wTag = this.weekTag(now)
@@ -171,12 +285,14 @@ export default class Ledger extends React.Component<LedgerProps, State> {
 
     if (!s.weekTag) patch.weekTag = wTag
     else if (s.weekTag !== wTag) {
+      if (this.weekHasContent(s)) this.archiveWeek(s)
       if (this.weekHasContent(s) && !this.dismissed.has('week:' + wTag)) pending = 'week'
       else patch.weekTag = wTag
     }
 
     if (!s.monthTag) patch.monthTag = mTag
     else if (s.monthTag !== mTag) {
+      if (this.monthHasContent(s)) this.archiveMonth(s)
       if (this.monthHasContent(s) && !this.dismissed.has('month:' + mTag)) {
         if (!pending) pending = 'month'
       } else patch.monthTag = mTag
@@ -186,64 +302,53 @@ export default class Ledger extends React.Component<LedgerProps, State> {
     if (Object.keys(patch).length) this.setState(patch)
   }
 
+  /* The snapshot was already written at detection time. "Archive & start
+   * fresh" only *clears* — and it refuses to clear anything the DB hasn't
+   * confirmed, so a failed write can never blank the board. */
   resolveWeek(action: 'archive' | 'keep') {
     const wTag = this.weekTag(new Date())
-    const s = this.state
     if (action === 'archive') {
-      this.props.onArchive?.({
-        period_type: 'week',
-        period_tag: s.weekTag,
-        snapshot: { weekTheme: s.weekTheme, priorities: s.priorities, reviewItems: s.reviewItems },
-      })
+      if (this.archivedOk.week !== true) {
+        this.setState({ archiveError: 'week' })
+        return
+      }
       this.setState(
-        { weekTheme: '', priorities: ['', '', ''], reviewItems: [], weekTag: wTag, pendingRollover: null },
+        { weekTheme: '', priorities: ['', '', ''], reviewItems: [], weekTag: wTag, pendingRollover: null, archiveError: null },
         () => this.detectRollover()
       )
     } else {
-      this.setState({ weekTag: wTag, pendingRollover: null }, () => this.detectRollover())
+      this.setState({ weekTag: wTag, pendingRollover: null, archiveError: null }, () => this.detectRollover())
     }
   }
 
   resolveMonth(action: 'archive' | 'keep') {
     const mTag = this.monthTag(new Date())
-    const s = this.state
     if (action === 'archive') {
-      this.props.onArchive?.({
-        period_type: 'month',
-        period_tag: s.monthTag,
-        snapshot: {
-          monthFocus: s.monthFocus,
-          milestones: s.milestones,
-          monthObs: s.monthObs,
-          monthCorr: s.monthCorr,
-          revGoal: s.revGoal,
-          revMade: s.revMadeByMonth[s.monthTag] ?? '',
-        },
-      })
+      if (this.archivedOk.month !== true) {
+        this.setState({ archiveError: 'month' })
+        return
+      }
       this.setState(
-        { monthFocus: '', milestones: [], monthObs: '', monthCorr: '', monthTag: mTag, pendingRollover: null },
+        { monthFocus: '', milestones: [], monthObs: '', monthCorr: '', monthTag: mTag, pendingRollover: null, archiveError: null },
         () => this.detectRollover()
       )
     } else {
-      this.setState({ monthTag: mTag, pendingRollover: null }, () => this.detectRollover())
+      this.setState({ monthTag: mTag, pendingRollover: null, archiveError: null }, () => this.detectRollover())
     }
   }
 
   dismissRollover(kind: 'week' | 'month') {
     const tag = kind === 'week' ? this.weekTag(new Date()) : this.monthTag(new Date())
     this.dismissed.add(kind + ':' + tag)
-    this.setState({ pendingRollover: null })
+    this.setState({ pendingRollover: null, archiveError: null })
   }
 
   weekLabelFromTag(tag: string) {
-    const wk = tag.split('-W')[1]
-    return wk ? 'Week ' + String(Number(wk)) : tag
+    return weekLabelFromTag(tag)
   }
 
   monthLabelFromTag(tag: string) {
-    const [y, m] = tag.split('-')
-    if (!y || !m) return tag
-    return new Date(Number(y), Number(m) - 1, 1).toLocaleDateString('en-GB', { month: 'long', year: 'numeric' })
+    return monthLabelFromTag(tag)
   }
 
   renderRollover() {
@@ -267,6 +372,7 @@ export default class Ledger extends React.Component<LedgerProps, State> {
           onArchive={() => this.resolveWeek('archive')}
           onKeep={() => this.resolveWeek('keep')}
           onLater={() => this.dismissRollover('week')}
+          error={s.archiveError === 'week'}
         />
       )
     }
@@ -288,6 +394,7 @@ export default class Ledger extends React.Component<LedgerProps, State> {
         onArchive={() => this.resolveMonth('archive')}
         onKeep={() => this.resolveMonth('keep')}
         onLater={() => this.dismissRollover('month')}
+        error={s.archiveError === 'month'}
       />
     )
   }
@@ -369,6 +476,7 @@ export default class Ledger extends React.Component<LedgerProps, State> {
       done: !!it.done,
       notDone: !it.done,
       text: it.text,
+      category: it.category,
       inputStyle: {
         flex: 1,
         minWidth: 0,
@@ -398,13 +506,34 @@ export default class Ledger extends React.Component<LedgerProps, State> {
     }))
   }
 
-  commit(listKey: 'tasks' | 'reviewItems' | 'milestones', draftKey: 'newTask' | 'newReview' | 'newMilestone') {
+  commit(
+    listKey: 'tasks' | 'reviewItems' | 'milestones',
+    draftKey: 'newWorkTask' | 'newMiscTask' | 'newReview' | 'newMilestone',
+    category?: 'work' | 'misc'
+  ) {
     return (e: React.KeyboardEvent) => {
       if (e.key === 'Enter' && (this.state[draftKey] as string).trim()) {
         this.setState(
           (s) =>
             ({
-              [listKey]: [...(s[listKey] as Item[]), { id: Date.now(), text: (s[draftKey] as string).trim(), done: false }],
+              [listKey]: [
+                ...(s[listKey] as Item[]),
+                { id: Date.now(), text: (s[draftKey] as string).trim(), done: false, ...(category ? { category } : {}) },
+              ],
+              [draftKey]: '',
+            }) as any
+        )
+      }
+    }
+  }
+
+  commitText(listKey: 'priorities', draftKey: 'newPriority') {
+    return (e: React.KeyboardEvent) => {
+      if (e.key === 'Enter' && (this.state[draftKey] as string).trim()) {
+        this.setState(
+          (s) =>
+            ({
+              [listKey]: [...(s[listKey] as string[]), (s[draftKey] as string).trim()],
               [draftKey]: '',
             }) as any
         )
@@ -439,6 +568,68 @@ export default class Ledger extends React.Component<LedgerProps, State> {
     )
   }
 
+  moveTo(id: number, category: 'work' | 'misc') {
+    this.setState((s) => ({ tasks: s.tasks.map((x) => (x.id === id ? { ...x, category } : x)) }))
+  }
+
+  renderTaskSection(opts: {
+    title: string
+    rows: ReturnType<Ledger['listRows']>
+    variant: 'work' | 'misc'
+    draftKey: 'newWorkTask' | 'newMiscTask'
+  }) {
+    const { title, rows, variant, draftKey } = opts
+    const headerColor = variant === 'work' ? 'var(--accent,#7c2d12)' : '#8a8175'
+    const otherCat: 'work' | 'misc' = variant === 'work' ? 'misc' : 'work'
+    const moveText = variant === 'work' ? '→ misc' : '→ work'
+    const placeholder = variant === 'work' ? 'add a work task, press Enter…' : 'add a misc task, press Enter…'
+    return (
+      <div style={variant === 'misc' ? css('margin-top:22px') : undefined}>
+        <div style={css('font-size:15.2px;font-weight:600;letter-spacing:0.14em;color:' + headerColor + ';margin-bottom:10px')}>{title}</div>
+        <div style={css('display:flex;flex-direction:column')}>
+          {rows.map((row) => {
+            const inputStyle: React.CSSProperties =
+              variant === 'misc'
+                ? { ...row.inputStyle, fontSize: 13.5, ...(row.done ? {} : { color: '#57534e', fontWeight: 400 }) }
+                : row.inputStyle
+            return (
+              <div key={row.key} style={css('display:flex;gap:12px;align-items:center;padding:4px 0;border-bottom:1px solid #eae4d8')}>
+                {this.check(row.done, row.toggle, 18, row.done ? 'Mark not done' : 'Mark done')}
+                <input type="text" value={row.text} onChange={row.onChange} placeholder="…" className="uin" style={inputStyle} />
+                <button
+                  onClick={() => this.moveTo(row.key, otherCat)}
+                  className="linkbtn"
+                  aria-label={'Move to ' + otherCat}
+                  style={css('font-size:12px;flex:none;letter-spacing:0.04em')}
+                >
+                  {moveText}
+                </button>
+                {this.delBtn(row.del, 'Delete task')}
+              </div>
+            )
+          })}
+          <div style={css('display:flex;gap:12px;align-items:center;padding:8px 0')}>
+            <span style={css('width:18px;height:18px;display:flex;align-items:center;justify-content:center;color:#b5ab9a;flex:none')}>
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                <line x1="12" y1="5" x2="12" y2="19" />
+                <line x1="5" y1="12" x2="19" y2="12" />
+              </svg>
+            </span>
+            <input
+              type="text"
+              value={this.state[draftKey] as string}
+              onChange={(e) => this.setState({ [draftKey]: e.target.value } as any)}
+              onKeyDown={this.commit('tasks', draftKey, variant)}
+              placeholder={placeholder}
+              className="uin"
+              style={css("flex:1;min-width:0;font-family:'Source Serif 4',serif;font-style:italic;font-size:20.3px;color:#44403c;padding:4px 0")}
+            />
+          </div>
+        </div>
+      </div>
+    )
+  }
+
   renderDots(dots: ReturnType<Ledger['dots']>) {
     const base = 'display:block;width:8px;height:8px;border-radius:99px'
     return dots.map((d) => {
@@ -460,11 +651,13 @@ export default class Ledger extends React.Component<LedgerProps, State> {
       daily: now.toLocaleDateString('en-GB', { weekday: 'long', month: 'long', day: 'numeric' }),
       weekly: 'Week ' + this.isoWeek(now),
       monthly: now.toLocaleDateString('en-GB', { month: 'long', year: 'numeric' }),
+      history: 'History',
     }
     const metas: Dict = {
       daily: 'Week ' + this.isoWeek(now) + ' · ' + now.getFullYear(),
       weekly: this.weekRange(),
       monthly: 'Month ' + (now.getMonth() + 1) + ' of 12',
+      history: 'Past weeks & months',
     }
 
     const doneCount = s.tasks.filter((x) => x.done).length
@@ -481,13 +674,16 @@ export default class Ledger extends React.Component<LedgerProps, State> {
     const isDaily = s.activeTab === 'daily'
     const isWeekly = s.activeTab === 'weekly'
     const isMonthly = s.activeTab === 'monthly'
+    const isHistory = s.activeTab === 'history'
 
     const taskRows = this.listRows('tasks')
+    const workRows = taskRows.filter((r) => r.category === 'work')
+    const miscRows = taskRows.filter((r) => r.category !== 'work')
     const milestoneRows = this.listRows('milestones')
     const leadDots = this.dots('leadDone')
     const postDots = this.dots('postDone')
 
-    const tabs = ['Daily', 'Weekly', 'Monthly'].map((label) => {
+    const tabs = ['Daily', 'Weekly', 'Monthly', 'History'].map((label) => {
       const id = label.toLowerCase()
       return { label, active: s.activeTab === id, onClick: () => this.setState({ activeTab: id }, () => this.detectRollover()) }
     })
@@ -549,6 +745,17 @@ export default class Ledger extends React.Component<LedgerProps, State> {
                   />
                 </div>
               </div>
+              {/* values & mantras — daily only */}
+              {isDaily && (
+                <div style={css('display:flex;flex-wrap:wrap;align-items:baseline;gap:14px;padding:13px 0 15px;border-top:1px solid #e3ddd0')}>
+                  {MANTRAS.map((m, idx) => (
+                    <span key={m} style={css('display:flex;align-items:baseline;gap:14px;max-width:100%')}>
+                      {idx > 0 && <span style={css('font-size:20.3px;color:#b5ab9a;flex:none')}>·</span>}
+                      <span style={css("font-family:'Source Serif 4',serif;font-style:italic;font-size:20.3px;color:#8a8175")}>{m}</span>
+                    </span>
+                  ))}
+                </div>
+              )}
             </div>
 
             {/* ---------- DAILY ---------- */}
@@ -556,33 +763,8 @@ export default class Ledger extends React.Component<LedgerProps, State> {
               <div style={css('display:grid;grid-template-columns:1.2fr 1fr')}>
                 {/* today's list */}
                 <div style={css('padding:26px 32px 32px 40px;border-right:1px solid #e3ddd0')}>
-                  <div style={css('font-size:15.2px;font-weight:600;letter-spacing:0.14em;color:#8a8175;margin-bottom:10px')}>TODAY'S LIST</div>
-                  <div style={css('display:flex;flex-direction:column')}>
-                    {taskRows.map((row) => (
-                      <div key={row.key} style={css('display:flex;gap:12px;align-items:center;padding:4px 0;border-bottom:1px solid #eae4d8')}>
-                        {this.check(row.done, row.toggle, 18, row.done ? 'Mark not done' : 'Mark done')}
-                        <input type="text" value={row.text} onChange={row.onChange} placeholder="…" className="uin" style={row.inputStyle} />
-                        {this.delBtn(row.del, 'Delete task')}
-                      </div>
-                    ))}
-                    <div style={css('display:flex;gap:12px;align-items:center;padding:8px 0')}>
-                      <span style={css('width:18px;height:18px;display:flex;align-items:center;justify-content:center;color:#b5ab9a;flex:none')}>
-                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-                          <line x1="12" y1="5" x2="12" y2="19" />
-                          <line x1="5" y1="12" x2="19" y2="12" />
-                        </svg>
-                      </span>
-                      <input
-                        type="text"
-                        value={s.newTask}
-                        onChange={(e) => this.setState({ newTask: e.target.value })}
-                        onKeyDown={this.commit('tasks', 'newTask')}
-                        placeholder="add a line, press Enter…"
-                        className="uin"
-                        style={css("flex:1;min-width:0;font-family:'Source Serif 4',serif;font-style:italic;font-size:20.3px;color:#44403c;padding:4px 0")}
-                      />
-                    </div>
-                  </div>
+                  {this.renderTaskSection({ title: 'WORK', rows: workRows, variant: 'work', draftKey: 'newWorkTask' })}
+                  {this.renderTaskSection({ title: 'MISC', rows: miscRows, variant: 'misc', draftKey: 'newMiscTask' })}
                   <div style={css('margin-top:24px;padding-top:14px;border-top:1px solid #e3ddd0;display:flex;justify-content:space-between;align-items:center;font-size:16.7px;color:#8a8175')}>
                     <span>{s.tasks.length === 0 ? 'Nothing planned yet' : doneCount + ' of ' + s.tasks.length + ' complete'}</span>
                     <div style={css('display:flex;align-items:center;gap:14px')}>
@@ -680,7 +862,7 @@ export default class Ledger extends React.Component<LedgerProps, State> {
                   />
                   <div style={css('display:flex;flex-direction:column;margin-top:18px')}>
                     {s.priorities.map((text, idx) => (
-                      <div key={idx} style={css('display:flex;gap:14px;align-items:baseline;padding:6px 0;border-bottom:1px solid #eae4d8')}>
+                      <div key={idx} style={css('display:flex;gap:14px;align-items:center;padding:6px 0;border-bottom:1px solid #eae4d8')}>
                         <span style={css("font-family:'Source Serif 4',serif;font-size:21.8px;font-weight:600;color:var(--accent,#7c2d12);width:16px;flex:none")}>{idx + 1}</span>
                         <input
                           type="text"
@@ -690,8 +872,26 @@ export default class Ledger extends React.Component<LedgerProps, State> {
                           className="uin"
                           style={css('flex:1;min-width:0;font-size:20.3px;color:#1c1917;font-weight:500;padding:4px 0')}
                         />
+                        {this.delBtn(() => this.setState((prev) => ({ priorities: prev.priorities.filter((_, i) => i !== idx) })), 'Delete priority', true)}
                       </div>
                     ))}
+                    <div style={css('display:flex;gap:14px;align-items:center;padding:8px 0')}>
+                      <span style={css('width:16px;height:18px;display:flex;align-items:center;justify-content:center;color:#b5ab9a;flex:none')}>
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                          <line x1="12" y1="5" x2="12" y2="19" />
+                          <line x1="5" y1="12" x2="19" y2="12" />
+                        </svg>
+                      </span>
+                      <input
+                        type="text"
+                        value={s.newPriority}
+                        onChange={(e) => this.setState({ newPriority: e.target.value })}
+                        onKeyDown={this.commitText('priorities', 'newPriority')}
+                        placeholder="add a priority, press Enter…"
+                        className="uin"
+                        style={css("flex:1;min-width:0;font-family:'Source Serif 4',serif;font-style:italic;font-size:20.3px;color:#44403c;padding:4px 0")}
+                      />
+                    </div>
                   </div>
                 </div>
 
@@ -809,6 +1009,9 @@ export default class Ledger extends React.Component<LedgerProps, State> {
                 </div>
               </div>
             )}
+
+            {/* ---------- HISTORY ---------- */}
+            {isHistory && <History load={this.props.onLoadHistory} />}
           </div>
         </div>
       </div>

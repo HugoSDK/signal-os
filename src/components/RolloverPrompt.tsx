@@ -11,6 +11,8 @@ interface Props {
   onArchive: () => void
   onKeep: () => void
   onLater: () => void
+  /** The snapshot didn't reach the DB, so clearing was refused. */
+  error?: boolean
 }
 
 const overlay: React.CSSProperties = {
@@ -34,7 +36,7 @@ const card: React.CSSProperties = {
   padding: '30px 34px 26px',
 }
 
-export default function RolloverPrompt({ kind, endedLabel, nextLabel, lines, onArchive, onKeep, onLater }: Props) {
+export default function RolloverPrompt({ kind, endedLabel, nextLabel, lines, onArchive, onKeep, onLater, error }: Props) {
   const noun = kind === 'week' ? 'week' : 'month'
   return (
     <div style={overlay} onClick={onLater}>
@@ -106,6 +108,20 @@ export default function RolloverPrompt({ kind, endedLabel, nextLabel, lines, onA
             ))
           )}
         </div>
+
+        {error && (
+          <div
+            style={{
+              fontFamily: "'Source Serif 4', serif",
+              fontStyle: 'italic',
+              fontSize: 16,
+              color: 'var(--accent, #7c2d12)',
+              margin: '0 0 12px',
+            }}
+          >
+            Couldn’t save this {noun} to history — nothing was cleared. Check your connection and try again.
+          </div>
+        )}
 
         <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
           <button
