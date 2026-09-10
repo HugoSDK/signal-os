@@ -122,8 +122,8 @@ const MANTRAS = ['Do hard things', 'How bad do you want it?']
 const QUOTE = {
   text:
     'It\u2019s not my nature, when you get little surprises as a result of human nature, to spend much time ' +
-    'feeling betrayed. I always just want to put my head down and adjust. So I don\u2019t allow myself much ' +
-    'time ever with any feelings of betrayal. So you\u2019re asking the wrong person, because if some ' +
+    'feeling betrayed. I always just want to put my head down and adjust. I don\u2019t allow myself much ' +
+    'time ever with any feelings of betrayal. You\u2019re asking the wrong person, because if some ' +
     'flickering idea like that came to me, I\u2019d get rid of it quickly. I don\u2019t like any feeling of ' +
     'being victimized; I think that\u2019s a counterproductive way to think as a human being. I am not a ' +
     'victim; I\u2019m a survivor.',
