@@ -119,6 +119,17 @@ const EMPTY_DAY: DayRec = { leadWho: '', leadDone: false, postWhat: '', postDone
 /* Fixed daily anchors — edit this list to change what shows on the Daily tab. */
 const MANTRAS = ['Do hard things', 'How bad do you want it?']
 
+const QUOTE = {
+  text:
+    'It\u2019s not my nature, when you get little surprises as a result of human nature, to spend much time ' +
+    'feeling betrayed. I always just want to put my head down and adjust. So I don\u2019t allow myself much ' +
+    'time ever with any feelings of betrayal. So you\u2019re asking the wrong person, because if some ' +
+    'flickering idea like that came to me, I\u2019d get rid of it quickly. I don\u2019t like any feeling of ' +
+    'being victimized; I think that\u2019s a counterproductive way to think as a human being. I am not a ' +
+    'victim; I\u2019m a survivor.',
+  author: 'Charlie Munger',
+}
+
 /* Period-tag → display label. Module-level so History can reuse them. */
 export function weekLabelFromTag(tag: string) {
   const wk = tag.split('-W')[1]
@@ -747,13 +758,21 @@ export default class Ledger extends React.Component<LedgerProps, State> {
               </div>
               {/* values & mantras — daily only */}
               {isDaily && (
-                <div style={css('display:flex;flex-wrap:wrap;align-items:baseline;gap:14px;padding:13px 0 15px;border-top:1px solid #e3ddd0')}>
-                  {MANTRAS.map((m, idx) => (
-                    <span key={m} style={css('display:flex;align-items:baseline;gap:14px;max-width:100%')}>
-                      {idx > 0 && <span style={css('font-size:20.3px;color:#b5ab9a;flex:none')}>·</span>}
-                      <span style={css("font-family:'Source Serif 4',serif;font-style:italic;font-size:20.3px;color:#8a8175")}>{m}</span>
+                <div style={css('padding:13px 0 16px;border-top:1px solid #e3ddd0')}>
+                  <div style={css('display:flex;flex-wrap:wrap;align-items:baseline;gap:14px')}>
+                    {MANTRAS.map((m, idx) => (
+                      <span key={m} style={css('display:flex;align-items:baseline;gap:14px;max-width:100%')}>
+                        {idx > 0 && <span style={css('font-size:20.3px;color:#b5ab9a;flex:none')}>·</span>}
+                        <span style={css("font-family:'Source Serif 4',serif;font-style:italic;font-size:20.3px;color:#8a8175")}>{m}</span>
+                      </span>
+                    ))}
+                  </div>
+                  <blockquote style={css("margin:12px 0 0;max-width:76ch;font-family:'Source Serif 4',serif;font-style:italic;font-size:18.1px;line-height:1.55;color:#a89f90")}>
+                    {QUOTE.text}
+                    <span style={css('display:block;margin-top:5px;font-style:normal;font-size:15.2px;letter-spacing:0.08em;color:#b5ab9a')}>
+                      {'— ' + QUOTE.author}
                     </span>
-                  ))}
+                  </blockquote>
                 </div>
               )}
             </div>
