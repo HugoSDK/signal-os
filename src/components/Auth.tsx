@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { supabase } from '../lib/supabase'
+import { C, CornerTicks, Logo, MONO, css } from './ui'
 
 export default function Auth() {
   const [email, setEmail] = useState('')
@@ -21,107 +22,54 @@ export default function Auth() {
     else setSent(true)
   }
 
+  const label = css(`font-family:${MONO};font-size:10px;letter-spacing:0.2em;color:${C.inkLabel2}`)
+
   return (
     <div
-      style={{
-        minHeight: '100vh',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        padding: 20,
-      }}
+      style={css(
+        `min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px;background:${C.ground}`
+      )}
     >
       <div
-        style={{
-          width: 420,
-          maxWidth: '100%',
-          background: '#f7f4ee',
-          border: '1px solid #e0d9ca',
-          boxShadow: '0 2px 16px rgba(60,50,30,0.08)',
-          borderRadius: 4,
-          padding: '40px 40px 36px',
-        }}
+        style={css(
+          `width:400px;max-width:100%;background:${C.surface};border:1px solid ${C.border};padding:34px 34px 30px;position:relative`
+        )}
       >
-        <div style={{ fontSize: 15.2, fontWeight: 600, letterSpacing: '0.18em', color: '#8a8175' }}>
-          SIGNAL — LEDGER
+        <CornerTicks />
+        <div style={css('display:flex;align-items:center;gap:10px')}>
+          <Logo size={22} faint />
+          <span style={css(`font-family:${MONO};font-size:10.5px;letter-spacing:0.22em;color:${C.inkLabel2}`)}>LEDGER</span>
         </div>
-        <h1
-          style={{
-            margin: '14px 0 6px',
-            fontFamily: "'Source Serif 4', serif",
-            fontSize: 34,
-            fontWeight: 600,
-            letterSpacing: '-0.01em',
-            color: '#1c1917',
-          }}
-        >
+        <h1 style={css(`margin:22px 0 20px;font-size:31px;font-weight:500;letter-spacing:-0.02em;color:${C.ink}`)}>
           {sent ? 'Check your email' : 'Sign in'}
         </h1>
 
         {sent ? (
-          <p
-            style={{
-              margin: '10px 0 0',
-              fontFamily: "'Source Serif 4', serif",
-              fontStyle: 'italic',
-              fontSize: 19,
-              lineHeight: 1.5,
-              color: '#8a8175',
-            }}
-          >
-            We sent a magic link to <span style={{ color: '#1c1917' }}>{email}</span>. Open it on any
-            device to sign in — your ledger syncs everywhere.
-          </p>
+          <>
+            <div style={label}>MAGIC LINK SENT</div>
+            <div style={css(`margin-top:6px;font-size:16px;color:${C.inkBody};overflow-wrap:anywhere`)}>{email}</div>
+          </>
         ) : (
           <form onSubmit={submit}>
-            <p
-              style={{
-                margin: '10px 0 22px',
-                fontFamily: "'Source Serif 4', serif",
-                fontStyle: 'italic',
-                fontSize: 19,
-                lineHeight: 1.5,
-                color: '#8a8175',
-              }}
-            >
-              Enter your email and we'll send a magic link. No password.
-            </p>
+            <div style={label}>EMAIL</div>
             <input
               type="email"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               placeholder="you@email.com"
               autoFocus
-              className="uin ul"
-              style={{
-                width: '100%',
-                fontSize: 20,
-                color: '#1c1917',
-                padding: '8px 0',
-                marginBottom: 20,
-              }}
+              className="uin ul-strong"
+              style={css(`width:100%;font-size:18px;color:${C.ink};padding:7px 0;margin:4px 0 22px`)}
             />
             <button
               type="submit"
               disabled={loading}
-              style={{
-                width: '100%',
-                background: 'var(--accent, #7c2d12)',
-                color: '#f7f4ee',
-                border: 'none',
-                borderRadius: 4,
-                padding: '12px 0',
-                fontSize: 16,
-                fontWeight: 600,
-                cursor: loading ? 'default' : 'pointer',
-                opacity: loading ? 0.7 : 1,
-              }}
+              className="btn-pri"
+              style={css('width:100%;padding:12px 0;font-size:11px;letter-spacing:0.18em')}
             >
-              {loading ? 'Sending…' : 'Send magic link'}
+              {loading ? 'SENDING…' : 'SEND MAGIC LINK'}
             </button>
-            {err && (
-              <div style={{ marginTop: 12, fontSize: 14, color: '#b4462f' }}>{err}</div>
-            )}
+            {err && <div style={css(`margin-top:12px;font-size:14px;color:${C.accent}`)}>{err}</div>}
           </form>
         )}
       </div>
