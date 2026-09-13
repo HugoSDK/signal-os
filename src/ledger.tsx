@@ -617,6 +617,13 @@ export default class Ledger extends React.Component<LedgerProps, State> {
     }
   }
 
+  /** Revenue is stored as the raw typed string, keyed by month. */
+  setRevMade = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const v = e.target.value
+    const ym = monthTagOf(new Date())
+    this.setState((p) => ({ revMadeByMonth: { ...p.revMadeByMonth, [ym]: v } }))
+  }
+
   commitText(listKey: 'priorities', draftKey: 'newPriority') {
     return (e: React.KeyboardEvent) => {
       if (e.key === 'Enter' && (this.state[draftKey] as string).trim()) {
@@ -734,6 +741,9 @@ export default class Ledger extends React.Component<LedgerProps, State> {
           }
           revPctLabel={isTimeline ? (yearGoalNum > 0 ? yearPct + '%' : '—') : goalNum > 0 ? revPct + '%' : '—'}
           revTotal={(isTimeline ? yearTotalNum : madeNum).toLocaleString('en-US')}
+          revRaw={s.revMadeByMonth[ym] ?? ''}
+          revEditable={!isTimeline}
+          setRevMade={this.setRevMade}
           revFilled={isTimeline ? yearFilled : revFilled}
         >
           {s.activeTab === 'today' && (
@@ -846,10 +856,7 @@ export default class Ledger extends React.Component<LedgerProps, State> {
               onMilestoneKey={this.commit('milestones', 'newMilestone')}
               currency={currency}
               revMade={s.revMadeByMonth[ym] ?? ''}
-              setRevMade={(e) => {
-                const v = e.target.value
-                this.setState((p) => ({ revMadeByMonth: { ...p.revMadeByMonth, [ym]: v } }))
-              }}
+              setRevMade={this.setRevMade}
               revGoal={s.revGoal}
               setRevGoal={(e) => this.setState({ revGoal: e.target.value })}
               revFilled={revFilled}
