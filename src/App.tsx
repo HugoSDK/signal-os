@@ -3,58 +3,18 @@ import type { Session } from '@supabase/supabase-js'
 import { supabase } from './lib/supabase'
 import Ledger, { type State } from './ledger'
 import Auth from './components/Auth'
+import { C, MONO, css } from './components/ui'
 import { loadInitialState, makePersister, archivePeriod, loadHistory } from './lib/sync'
 
 function Splash({ label }: { label: string }) {
   return (
     <div
-      style={{
-        minHeight: '100vh',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        color: '#8a8175',
-        fontFamily: "'Source Serif 4', serif",
-        fontStyle: 'italic',
-        fontSize: 20,
-      }}
+      style={css(
+        `min-height:100vh;display:flex;align-items:center;justify-content:center;background:${C.ground};` +
+          `font-family:${MONO};font-size:10.5px;letter-spacing:0.22em;color:${C.inkLabel2}`
+      )}
     >
       {label}
-    </div>
-  )
-}
-
-function AccountBar({ email }: { email: string }) {
-  return (
-    <div
-      style={{
-        position: 'fixed',
-        bottom: 8,
-        left: 12,
-        fontSize: 12,
-        color: '#b5ab9a',
-        display: 'flex',
-        gap: 8,
-        alignItems: 'center',
-        zIndex: 50,
-      }}
-    >
-      <span>{email}</span>
-      <span>·</span>
-      <button
-        onClick={() => supabase.auth.signOut()}
-        style={{
-          background: 'none',
-          border: 'none',
-          color: '#b5ab9a',
-          cursor: 'pointer',
-          padding: 0,
-          fontSize: 12,
-          textDecoration: 'underline',
-        }}
-      >
-        Sign out
-      </button>
     </div>
   )
 }
@@ -86,24 +46,23 @@ export default function App() {
   }, [userId])
 
   const persist = useMemo(() => (userId ? makePersister(userId) : undefined), [userId])
-  // Stable identity: History refetches whenever this prop's identity changes.
+  // Stable identity: Ledger refetches the archive whenever this prop changes.
   const fetchHistory = useMemo(() => (userId ? () => loadHistory(userId) : undefined), [userId])
 
-  if (session === undefined) return <Splash label="Loading…" />
+  if (session === undefined) return <Splash label="LOADING" />
   if (!session) return <Auth />
-  if (!initial) return <Splash label="Loading your ledger…" />
+  if (!initial) return <Splash label="LOADING YOUR LEDGER" />
 
   return (
-    <>
-      <Ledger
-        key={userId}
-        initialState={initial.state}
-        onPersist={persist}
-        userId={userId}
-        onArchive={(row) => archivePeriod(userId, row)}
-        onLoadHistory={fetchHistory}
-      />
-      <AccountBar email={session.user.email ?? ''} />
-    </>
+    <Ledger
+      key={userId}
+      initialState={initial.state}
+      onPersist={persist}
+      userId={userId}
+      email={session.user.email ?? ''}
+      onSignOut={() => supabase.auth.signOut()}
+      onArchive={(row) => archivePeriod(userId, row)}
+      onLoadHistory={fetchHistory}
+    />
   )
 }

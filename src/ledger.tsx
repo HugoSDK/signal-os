@@ -1,34 +1,35 @@
 import React from 'react'
 import RolloverPrompt from './components/RolloverPrompt'
-import History from './components/History'
+import Shell from './components/Shell'
+import Today from './components/Today'
+import Week from './components/Week'
+import Month from './components/Month'
+import Archive from './components/Archive'
+import IntentionModal from './components/IntentionModal'
+import ReflectionModal from './components/ReflectionModal'
+import type { Dot, Row, WeekDot } from './components/ui'
 import type { ArchivedPeriod } from './lib/sync'
+import { buildEntries, monthCards, monthDetail, revenueByMonth } from './lib/archive'
+import {
+  dateKey,
+  dayOfYear,
+  daysInMonth,
+  elapsedDaysThisWeek,
+  isoWeek,
+  monthLabelFromTag,
+  monthTagOf,
+  pad,
+  parseAmount,
+  weekDates,
+  weekLabelFromTag,
+  weekRange,
+  weekTagOf,
+} from './lib/dates'
 
 /* ------------------------------------------------------------------ *
- * Faithful port of the Signal Ledger export (was a "DC" React class). *
- * Logic is preserved verbatim; the <x-dc> template is translated to   *
- * JSX. A css() helper lets us reuse the exact inline-style strings;   *
- * :hover / :focus effects live in index.css classes.                  *
+ * Ledger owns all state: the persisted board, the period rollover and  *
+ * the archive fetch. Everything below it is presentational.            *
  * ------------------------------------------------------------------ */
-
-type Dict = Record<string, any>
-
-const css = (s: string): React.CSSProperties => {
-  const o: Dict = {}
-  for (const rule of s.split(';')) {
-    const r = rule.trim()
-    if (!r) continue
-    const i = r.indexOf(':')
-    if (i < 0) continue
-    let k = r.slice(0, i).trim()
-    const v = r.slice(i + 1).trim()
-    if (k.startsWith('--')) {
-      o[k] = v
-    } else {
-      o[k.replace(/-([a-z])/g, (_, c) => c.toUpperCase())] = v
-    }
-  }
-  return o as React.CSSProperties
-}
 
 export interface Item {
   id: number
@@ -36,25 +37,30 @@ export interface Item {
   done?: boolean
   category?: 'work' | 'misc'
 }
+
 export interface DayRec {
+  /** The one thing the day is for, and whether it got done. */
+  intention: string
+  topDone: boolean
   leadWho: string
   leadDone: boolean
   postWhat: string
   postDone: boolean
+  /** End-of-day reflection. */
+  wentWell: string
+  improve: string
   gratitude: string[]
 }
+
 export interface State {
   activeTab: string
   tasks: Item[]
-  hardStop: string
   newWorkTask: string
   newMiscTask: string
   days: Record<string, DayRec>
   weekTheme: string
   priorities: string[]
   newPriority: string
-  objectives: Item[]
-  newObjective: string
   reviewItems: Item[]
   newReview: string
   monthFocus: string
@@ -64,12 +70,21 @@ export interface State {
   monthCorr: string
   revGoal: string
   revMadeByMonth: Record<string, string>
+  /** Date key of the day the mantra band was last acknowledged. */
+  quoteSeen: string
+  /** Month tag whose archive detail is open, if any. */
+  openPeriod: string | null
   dayTag: string
   weekTag: string
   monthTag: string
   pendingRollover: 'week' | 'month' | null
-  /** Set when 'Archive & start fresh' was blocked because the DB write failed. */
+  /** Set when 'Archive & reset' was blocked because the DB write failed. */
   archiveError: 'week' | 'month' | null
+
+  /* UI-only, never persisted. */
+  intentionOpen: boolean
+  reflectionOpen: boolean
+  archive: ArchivedPeriod[]
 }
 
 export interface LedgerProps {
@@ -81,23 +96,22 @@ export interface LedgerProps {
   onPersist?: (state: State) => void
   /** Persist a period snapshot to history (rollover "archive"). */
   onArchive?: (row: { period_type: 'week' | 'month'; period_tag: string; snapshot: Record<string, unknown> }) => Promise<boolean>
-  /** Lazily load archived periods for the History tab. */
+  /** Lazily load archived periods. Fetched once on mount for the Archive tab. */
   onLoadHistory?: () => Promise<ArchivedPeriod[]>
   userId?: string
+  email?: string
+  onSignOut?: () => void
 }
 
 export const DEFAULT_STATE: State = {
-  activeTab: 'daily',
+  activeTab: 'today',
   tasks: [],
-  hardStop: '18:00',
   newWorkTask: '',
   newMiscTask: '',
   days: {},
   weekTheme: '',
   priorities: ['', '', ''],
   newPriority: '',
-  objectives: [],
-  newObjective: '',
   reviewItems: [],
   newReview: '',
   monthFocus: '',
@@ -107,40 +121,36 @@ export const DEFAULT_STATE: State = {
   monthCorr: '',
   revGoal: '5000',
   revMadeByMonth: {},
+  quoteSeen: '',
+  openPeriod: null,
   dayTag: '',
   weekTag: '',
   monthTag: '',
   pendingRollover: null,
   archiveError: null,
+  intentionOpen: false,
+  reflectionOpen: false,
+  archive: [],
 }
 
-const EMPTY_DAY: DayRec = { leadWho: '', leadDone: false, postWhat: '', postDone: false, gratitude: ['', '', ''] }
-
-/* Fixed daily anchors — edit this list to change what shows on the Daily tab. */
-const MANTRAS = ['Do hard things', 'How bad do you want it?']
-
-const QUOTE = {
-  text:
-    'It\u2019s not my nature, when you get little surprises as a result of human nature, to spend much time ' +
-    'feeling betrayed. I always just want to put my head down and adjust. I don\u2019t allow myself much ' +
-    'time ever with any feelings of betrayal. You\u2019re asking the wrong person, because if some ' +
-    'flickering idea like that came to me, I\u2019d get rid of it quickly. I don\u2019t like any feeling of ' +
-    'being victimized; I think that\u2019s a counterproductive way to think as a human being. I am not a ' +
-    'victim; I\u2019m a survivor.',
-  author: 'Charlie Munger',
+const EMPTY_DAY: DayRec = {
+  intention: '',
+  topDone: false,
+  leadWho: '',
+  leadDone: false,
+  postWhat: '',
+  postDone: false,
+  wentWell: '',
+  improve: '',
+  gratitude: ['', '', ''],
 }
 
-/* Period-tag → display label. Module-level so History can reuse them. */
-export function weekLabelFromTag(tag: string) {
-  const wk = tag.split('-W')[1]
-  return wk ? 'Week ' + String(Number(wk)) : tag
-}
+const TABS = ['today', 'week', 'month', 'timeline']
+/* Boards saved by earlier builds name the tabs differently. */
+const TAB_ALIASES: Record<string, string> = { daily: 'today', weekly: 'week', monthly: 'month', history: 'timeline' }
 
-export function monthLabelFromTag(tag: string) {
-  const [y, m] = tag.split('-')
-  if (!y || !m) return tag
-  return new Date(Number(y), Number(m) - 1, 1).toLocaleDateString('en-GB', { month: 'long', year: 'numeric' })
-}
+/** Fields that exist only for this session and must not reach storage. */
+const UI_ONLY = ['intentionOpen', 'reflectionOpen', 'archive'] as const
 
 export default class Ledger extends React.Component<LedgerProps, State> {
   constructor(props: LedgerProps) {
@@ -153,16 +163,21 @@ export default class Ledger extends React.Component<LedgerProps, State> {
         saved = null
       }
     }
-    this.state = Object.assign({}, DEFAULT_STATE, saved || {}, {
+    const st = Object.assign({}, DEFAULT_STATE, saved || {}, {
       newWorkTask: '',
       newMiscTask: '',
-      newObjective: '',
       newPriority: '',
       newReview: '',
       newMilestone: '',
       pendingRollover: null,
       archiveError: null,
+      intentionOpen: false,
+      reflectionOpen: false,
+      archive: [],
     })
+    if (TABS.indexOf(st.activeTab) < 0) st.activeTab = TAB_ALIASES[st.activeTab] || 'today'
+    if (!Array.isArray(st.priorities) || st.priorities.length === 0) st.priorities = ['', '', '']
+    this.state = st
   }
 
   dismissed = new Set<string>()
@@ -171,22 +186,59 @@ export default class Ledger extends React.Component<LedgerProps, State> {
     if (typeof document !== 'undefined' && document.visibilityState === 'visible') this.detectRollover()
   }
 
+  onKey = (e: KeyboardEvent) => {
+    if (e.key !== 'Escape') return
+    if (this.state.reflectionOpen) this.setState({ reflectionOpen: false })
+    if (this.state.intentionOpen) this.setState({ intentionOpen: false })
+  }
+
   componentDidMount() {
     this.detectRollover()
-    if (typeof document !== 'undefined') document.addEventListener('visibilitychange', this.onVisible)
+    this.loadArchive()
+    if (typeof document !== 'undefined') {
+      document.addEventListener('visibilitychange', this.onVisible)
+      document.addEventListener('keydown', this.onKey)
+    }
   }
 
-  componentWillUnmount() {
-    if (typeof document !== 'undefined') document.removeEventListener('visibilitychange', this.onVisible)
-  }
-
-  componentDidUpdate() {
+  componentDidUpdate(prev: LedgerProps) {
+    if (prev.onLoadHistory !== this.props.onLoadHistory) this.loadArchive()
+    const persisted = this.persistable()
     try {
-      window.localStorage.setItem('signal_ledger_v1', JSON.stringify(this.state))
+      window.localStorage.setItem('signal_ledger_v1', JSON.stringify(persisted))
     } catch (e) {
       /* ignore */
     }
-    this.props.onPersist?.(this.state)
+    this.props.onPersist?.(persisted)
+  }
+
+  componentWillUnmount() {
+    if (typeof document !== 'undefined') {
+      document.removeEventListener('visibilitychange', this.onVisible)
+      document.removeEventListener('keydown', this.onKey)
+    }
+  }
+
+  /** State minus the fields that only make sense inside this session. */
+  persistable(): State {
+    const out: any = Object.assign({}, this.state)
+    UI_ONLY.forEach((k) => delete out[k])
+    return out as State
+  }
+
+  /* ---------- archive ---------- */
+
+  loadArchive() {
+    const load = this.props.onLoadHistory
+    if (!load) {
+      this.setState({ archive: [] })
+      return
+    }
+    load()
+      .then((rows) => this.setState({ archive: rows || [] }))
+      .catch((e) => {
+        console.warn('loadArchive error', e?.message || e)
+      })
   }
 
   /* ---------- period rollover ---------- */
@@ -195,7 +247,7 @@ export default class Ledger extends React.Component<LedgerProps, State> {
    * tasks forward and clear the completed ones. Legacy state (no dayTag) just
    * initialises to today so nothing is cleared on first launch. */
   detectDayRollover() {
-    const today = this.dateKey(new Date())
+    const today = dateKey(new Date())
     const s = this.state
     if (!s.dayTag) {
       this.setState({ dayTag: today })
@@ -210,16 +262,11 @@ export default class Ledger extends React.Component<LedgerProps, State> {
   }
 
   weekTag(d: Date) {
-    const t = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()))
-    const day = t.getUTCDay() || 7
-    t.setUTCDate(t.getUTCDate() + 4 - day)
-    const yearStart = new Date(Date.UTC(t.getUTCFullYear(), 0, 1))
-    const week = Math.ceil(((+t - +yearStart) / 86400000 + 1) / 7)
-    return t.getUTCFullYear() + '-W' + String(week).padStart(2, '0')
+    return weekTagOf(d)
   }
 
   monthTag(d: Date) {
-    return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0')
+    return monthTagOf(d)
   }
 
   weekHasContent(s: State) {
@@ -258,6 +305,7 @@ export default class Ledger extends React.Component<LedgerProps, State> {
     }
     Promise.resolve(p).then((ok) => {
       this.archivedOk.week = ok
+      if (ok) this.loadArchive()
     })
   }
 
@@ -281,6 +329,7 @@ export default class Ledger extends React.Component<LedgerProps, State> {
     }
     Promise.resolve(p).then((ok) => {
       this.archivedOk.month = ok
+      if (ok) this.loadArchive()
     })
   }
 
@@ -288,8 +337,8 @@ export default class Ledger extends React.Component<LedgerProps, State> {
     this.detectDayRollover()
     if (this.state.pendingRollover) return
     const now = new Date()
-    const wTag = this.weekTag(now)
-    const mTag = this.monthTag(now)
+    const wTag = weekTagOf(now)
+    const mTag = monthTagOf(now)
     const s = this.state
     const patch: any = {}
     let pending: 'week' | 'month' | null = null
@@ -313,11 +362,11 @@ export default class Ledger extends React.Component<LedgerProps, State> {
     if (Object.keys(patch).length) this.setState(patch)
   }
 
-  /* The snapshot was already written at detection time. "Archive & start
-   * fresh" only *clears* — and it refuses to clear anything the DB hasn't
+  /* The snapshot was already written at detection time. "Archive & reset"
+   * only *clears* — and it refuses to clear anything the DB hasn't
    * confirmed, so a failed write can never blank the board. */
   resolveWeek(action: 'archive' | 'keep') {
-    const wTag = this.weekTag(new Date())
+    const wTag = weekTagOf(new Date())
     if (action === 'archive') {
       if (this.archivedOk.week !== true) {
         this.setState({ archiveError: 'week' })
@@ -333,7 +382,7 @@ export default class Ledger extends React.Component<LedgerProps, State> {
   }
 
   resolveMonth(action: 'archive' | 'keep') {
-    const mTag = this.monthTag(new Date())
+    const mTag = monthTagOf(new Date())
     if (action === 'archive') {
       if (this.archivedOk.month !== true) {
         this.setState({ archiveError: 'month' })
@@ -349,17 +398,9 @@ export default class Ledger extends React.Component<LedgerProps, State> {
   }
 
   dismissRollover(kind: 'week' | 'month') {
-    const tag = kind === 'week' ? this.weekTag(new Date()) : this.monthTag(new Date())
+    const tag = kind === 'week' ? weekTagOf(new Date()) : monthTagOf(new Date())
     this.dismissed.add(kind + ':' + tag)
     this.setState({ pendingRollover: null, archiveError: null })
-  }
-
-  weekLabelFromTag(tag: string) {
-    return weekLabelFromTag(tag)
-  }
-
-  monthLabelFromTag(tag: string) {
-    return monthLabelFromTag(tag)
   }
 
   renderRollover() {
@@ -367,18 +408,23 @@ export default class Ledger extends React.Component<LedgerProps, State> {
     if (!kind) return null
     const now = new Date()
     const s = this.state
+    const currency = this.props.currency ?? '$'
     if (kind === 'week') {
       const lines: { label: string; value: string }[] = []
       if (s.weekTheme.trim()) lines.push({ label: 'FOCUS', value: s.weekTheme.trim() })
       s.priorities.forEach((p, i) => {
-        if (p.trim()) lines.push({ label: 'PRIORITY ' + (i + 1), value: p.trim() })
+        if (p.trim()) lines.push({ label: 'PRIORITY ' + pad(i + 1), value: p.trim() })
       })
-      if (s.reviewItems.length) lines.push({ label: 'WINS', value: s.reviewItems.length + ' logged' })
+      const touches = this.countThisWeek('topDone')
+      if (touches) {
+        lines.push({ label: 'ADVANCED', value: pad(touches) + ' / ' + pad(elapsedDaysThisWeek(now)) + ' DAYS' })
+      }
+      if (s.reviewItems.length) lines.push({ label: 'EVIDENCE', value: pad(s.reviewItems.length) + ' LOGGED' })
       return (
         <RolloverPrompt
           kind="week"
-          endedLabel={this.weekLabelFromTag(s.weekTag)}
-          nextLabel={this.weekLabelFromTag(this.weekTag(now))}
+          endedLabel={weekLabelFromTag(s.weekTag || weekTagOf(now))}
+          nextLabel={weekLabelFromTag(weekTagOf(now))}
           lines={lines}
           onArchive={() => this.resolveWeek('archive')}
           onKeep={() => this.resolveWeek('keep')}
@@ -391,16 +437,16 @@ export default class Ledger extends React.Component<LedgerProps, State> {
     if (s.monthFocus.trim()) lines.push({ label: 'FOCUS', value: s.monthFocus.trim() })
     if (s.milestones.length) {
       const done = s.milestones.filter((m) => m.done).length
-      lines.push({ label: 'MILESTONES', value: done + '/' + s.milestones.length + ' done' })
+      lines.push({ label: 'MILESTONES', value: pad(done) + ' / ' + pad(s.milestones.length) })
     }
     const made = s.revMadeByMonth[s.monthTag]
-    if (made) lines.push({ label: 'REVENUE', value: (this.props.currency ?? '$') + made })
-    if (s.monthObs.trim() || s.monthCorr.trim()) lines.push({ label: 'CHECK-IN', value: 'written' })
+    if (made) lines.push({ label: 'REVENUE', value: currency + made })
+    if (s.monthObs.trim() || s.monthCorr.trim()) lines.push({ label: 'CHECK-IN', value: 'WRITTEN' })
     return (
       <RolloverPrompt
         kind="month"
-        endedLabel={this.monthLabelFromTag(s.monthTag)}
-        nextLabel={this.monthLabelFromTag(this.monthTag(now))}
+        endedLabel={monthLabelFromTag(s.monthTag || monthTagOf(now)).toUpperCase()}
+        nextLabel={monthLabelFromTag(monthTagOf(now)).toUpperCase()}
         lines={lines}
         onArchive={() => this.resolveMonth('archive')}
         onKeep={() => this.resolveMonth('keep')}
@@ -410,30 +456,27 @@ export default class Ledger extends React.Component<LedgerProps, State> {
     )
   }
 
-  dateKey(d: Date) {
-    const p = (n: number) => String(n).padStart(2, '0')
-    return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate())
-  }
+  /* ---------- day record ---------- */
 
   today(): DayRec {
-    const key = this.dateKey(new Date())
-    return Object.assign({}, EMPTY_DAY, this.state.days[key] || {})
+    return Object.assign({}, EMPTY_DAY, this.state.days[dateKey(new Date())] || {})
   }
 
   setToday(patch: Partial<DayRec>) {
-    const key = this.dateKey(new Date())
+    const key = dateKey(new Date())
     this.setState((s) => ({
       days: { ...s.days, [key]: Object.assign({}, EMPTY_DAY, s.days[key] || {}, patch) },
     }))
   }
 
-  streak(field: 'leadDone' | 'postDone') {
+  /** Consecutive days back from today (or yesterday, if today isn't done yet). */
+  streak(field: 'leadDone' | 'postDone' | 'topDone') {
     let n = 0
     const d = new Date()
-    const todayRec = this.state.days[this.dateKey(d)]
+    const todayRec = this.state.days[dateKey(d)]
     if (!(todayRec && todayRec[field])) d.setDate(d.getDate() - 1)
     while (true) {
-      const rec = this.state.days[this.dateKey(d)]
+      const rec = this.state.days[dateKey(d)]
       if (rec && rec[field]) {
         n++
         d.setDate(d.getDate() - 1)
@@ -443,12 +486,13 @@ export default class Ledger extends React.Component<LedgerProps, State> {
     return n
   }
 
-  dots(field: 'leadDone' | 'postDone') {
-    const out: { key: number; on: boolean; onToday: boolean; offPast: boolean; offToday: boolean }[] = []
-    for (let i = 13; i >= 0; i--) {
+  /** The last seven days, oldest first. */
+  dots(field: 'leadDone' | 'postDone' | 'topDone'): Dot[] {
+    const out: Dot[] = []
+    for (let i = 6; i >= 0; i--) {
       const d = new Date()
       d.setDate(d.getDate() - i)
-      const rec = this.state.days[this.dateKey(d)]
+      const rec = this.state.days[dateKey(d)]
       const done = !!(rec && rec[field])
       const isToday = i === 0
       out.push({
@@ -462,30 +506,48 @@ export default class Ledger extends React.Component<LedgerProps, State> {
     return out
   }
 
-  isoWeek(d: Date) {
-    const t = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()))
-    const day = t.getUTCDay() || 7
-    t.setUTCDate(t.getUTCDate() + 4 - day)
-    const yearStart = new Date(Date.UTC(t.getUTCFullYear(), 0, 1))
-    return Math.ceil(((+t - +yearStart) / 86400000 + 1) / 7)
+  /** Monday–Sunday of the current week, so future days read as pending
+   * rather than missed. */
+  weekDots(field: 'leadDone' | 'postDone' | 'topDone'): WeekDot[] {
+    const letters = ['M', 'T', 'W', 'T', 'F', 'S', 'S']
+    const todayKey = dateKey(new Date())
+    return weekDates().map((d, i) => {
+      const key = dateKey(d)
+      const rec = this.state.days[key]
+      const done = !!(rec && rec[field])
+      const isToday = key === todayKey
+      const isFuture = key > todayKey
+      return {
+        key,
+        label: letters[i],
+        on: done,
+        todayOff: !done && isToday,
+        pastOff: !done && !isToday && !isFuture,
+        futureOff: !done && isFuture,
+      }
+    })
   }
 
-  weekRange() {
-    const now = new Date()
-    const day = now.getDay() || 7
-    const mon = new Date(now)
-    mon.setDate(now.getDate() - day + 1)
-    const sun = new Date(mon)
-    sun.setDate(mon.getDate() + 6)
-    const fmt = (d: Date) => d.getDate() + ' ' + d.toLocaleDateString('en-GB', { month: 'long' })
-    return fmt(mon) + ' – ' + fmt(sun)
+  /** How many days so far this week had `field` set. Future days don't count. */
+  countThisWeek(field: 'leadDone' | 'postDone' | 'topDone') {
+    const todayKey = dateKey(new Date())
+    let n = 0
+    weekDates().forEach((d) => {
+      const key = dateKey(d)
+      if (key > todayKey) return
+      const rec = this.state.days[key]
+      if (rec && rec[field]) n++
+    })
+    return n
   }
 
-  listRows(key: 'tasks' | 'milestones') {
-    return (this.state[key] as Item[]).map((it) => ({
+  /* ---------- lists ---------- */
+
+  listRows(key: 'tasks' | 'milestones', size = 17.5): Row[] {
+    return (this.state[key] as Item[]).map((it, i) => ({
       key: it.id,
+      idx: pad(i + 1),
       done: !!it.done,
-      notDone: !it.done,
       text: it.text,
       category: it.category,
       inputStyle: {
@@ -494,17 +556,16 @@ export default class Ledger extends React.Component<LedgerProps, State> {
         background: 'transparent',
         border: 'none',
         outline: 'none',
-        fontSize: 14,
-        padding: '8px 0',
-        fontWeight: it.done ? 400 : 500,
-        color: it.done ? '#a89f90' : '#1c1917',
+        fontSize: size,
+        padding: '6px 0',
+        color: it.done ? '#5a6566' : '#0e1415',
         textDecoration: it.done ? 'line-through' : 'none',
       } as React.CSSProperties,
       toggle: () =>
         this.setState((s) => ({
           [key]: (s[key] as Item[]).map((x) => (x.id === it.id ? { ...x, done: !x.done } : x)),
         }) as any),
-      onChange: (e: any) => {
+      onChange: (e: React.ChangeEvent<HTMLInputElement>) => {
         const v = e.target.value
         this.setState((s) => ({
           [key]: (s[key] as Item[]).map((x) => (x.id === it.id ? { ...x, text: v } : x)),
@@ -515,6 +576,24 @@ export default class Ledger extends React.Component<LedgerProps, State> {
           [key]: (s[key] as Item[]).filter((x) => x.id !== it.id),
         }) as any),
     }))
+  }
+
+  /** Task rows for one list, re-indexed within that list. */
+  taskRows(variant: 'work' | 'misc'): Row[] {
+    const other: 'work' | 'misc' = variant === 'work' ? 'misc' : 'work'
+    return this.listRows('tasks', variant === 'misc' ? 16 : 17.5)
+      .filter((r) => (variant === 'work' ? r.category === 'work' : r.category !== 'work'))
+      .map((r, i) => {
+        const row: Row = {
+          ...r,
+          idx: pad(i + 1),
+          move: () =>
+            this.setState((s) => ({ tasks: s.tasks.map((x) => (x.id === r.key ? { ...x, category: other } : x)) })),
+        }
+        // Misc tasks sit a step back in the hierarchy while still open.
+        if (variant === 'misc' && !r.done) row.inputStyle = { ...r.inputStyle, color: '#1b2223' }
+        return row
+      })
   }
 
   commit(
@@ -552,490 +631,301 @@ export default class Ledger extends React.Component<LedgerProps, State> {
     }
   }
 
-  /* ---------- small render helpers ---------- */
-
-  check(done: boolean, onClick: () => void, size: number, label: string) {
-    const style = { width: size, height: size } as React.CSSProperties
-    if (done) {
-      return (
-        <button onClick={onClick} aria-label={label} className="chk done" style={style}>
-          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#f7f4ee" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
-            <polyline points="20 6 9 17 4 12" />
-          </svg>
-        </button>
-      )
-    }
-    return <button onClick={onClick} aria-label={label} className="chk todo" style={style} />
-  }
-
-  delBtn(onClick: () => void, label: string, show = false) {
-    return (
-      <button onClick={onClick} aria-label={label} className={show ? 'del show' : 'del'}>
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-          <line x1="18" y1="6" x2="6" y2="18" />
-          <line x1="6" y1="6" x2="18" y2="18" />
-        </svg>
-      </button>
-    )
-  }
-
-  moveTo(id: number, category: 'work' | 'misc') {
-    this.setState((s) => ({ tasks: s.tasks.map((x) => (x.id === id ? { ...x, category } : x)) }))
-  }
-
-  renderTaskSection(opts: {
-    title: string
-    rows: ReturnType<Ledger['listRows']>
-    variant: 'work' | 'misc'
-    draftKey: 'newWorkTask' | 'newMiscTask'
-  }) {
-    const { title, rows, variant, draftKey } = opts
-    const headerColor = variant === 'work' ? 'var(--accent,#7c2d12)' : '#8a8175'
-    const otherCat: 'work' | 'misc' = variant === 'work' ? 'misc' : 'work'
-    const moveText = variant === 'work' ? '→ misc' : '→ work'
-    const placeholder = variant === 'work' ? 'add a work task, press Enter…' : 'add a misc task, press Enter…'
-    return (
-      <div style={variant === 'misc' ? css('margin-top:22px') : undefined}>
-        <div style={css('font-size:15.2px;font-weight:600;letter-spacing:0.14em;color:' + headerColor + ';margin-bottom:10px')}>{title}</div>
-        <div style={css('display:flex;flex-direction:column')}>
-          {rows.map((row) => {
-            const inputStyle: React.CSSProperties =
-              variant === 'misc'
-                ? { ...row.inputStyle, fontSize: 13.5, ...(row.done ? {} : { color: '#57534e', fontWeight: 400 }) }
-                : row.inputStyle
-            return (
-              <div key={row.key} style={css('display:flex;gap:12px;align-items:center;padding:4px 0;border-bottom:1px solid #eae4d8')}>
-                {this.check(row.done, row.toggle, 18, row.done ? 'Mark not done' : 'Mark done')}
-                <input type="text" value={row.text} onChange={row.onChange} placeholder="…" className="uin" style={inputStyle} />
-                <button
-                  onClick={() => this.moveTo(row.key, otherCat)}
-                  className="linkbtn"
-                  aria-label={'Move to ' + otherCat}
-                  style={css('font-size:12px;flex:none;letter-spacing:0.04em')}
-                >
-                  {moveText}
-                </button>
-                {this.delBtn(row.del, 'Delete task')}
-              </div>
-            )
-          })}
-          <div style={css('display:flex;gap:12px;align-items:center;padding:8px 0')}>
-            <span style={css('width:18px;height:18px;display:flex;align-items:center;justify-content:center;color:#b5ab9a;flex:none')}>
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-                <line x1="12" y1="5" x2="12" y2="19" />
-                <line x1="5" y1="12" x2="19" y2="12" />
-              </svg>
-            </span>
-            <input
-              type="text"
-              value={this.state[draftKey] as string}
-              onChange={(e) => this.setState({ [draftKey]: e.target.value } as any)}
-              onKeyDown={this.commit('tasks', draftKey, variant)}
-              placeholder={placeholder}
-              className="uin"
-              style={css("flex:1;min-width:0;font-family:'Source Serif 4',serif;font-style:italic;font-size:20.3px;color:#44403c;padding:4px 0")}
-            />
-          </div>
-        </div>
-      </div>
-    )
-  }
-
-  renderDots(dots: ReturnType<Ledger['dots']>) {
-    const base = 'display:block;width:8px;height:8px;border-radius:99px'
-    return dots.map((d) => {
-      if (d.on) return <span key={d.key} style={css(base + ';background:var(--accent,#7c2d12)')} />
-      if (d.onToday) return <span key={d.key} style={css(base + ';background:var(--accent,#7c2d12);outline:1px solid #1c1917;outline-offset:1.5px')} />
-      if (d.offPast) return <span key={d.key} style={css(base + ';background:#ded7c8')} />
-      return <span key={d.key} style={css(base + ';background:#fdfcf9;border:1px solid #b5ab9a')} />
-    })
-  }
-
   render() {
     const s = this.state
-    const accent = this.props.accent ?? '#7c2d12'
+    const accent = this.props.accent ?? '#0b6c71'
     const currency = this.props.currency ?? '$'
     const now = new Date()
     const t = this.today()
+    const todayKey = dateKey(now)
 
-    const titles: Dict = {
-      daily: now.toLocaleDateString('en-GB', { weekday: 'long', month: 'long', day: 'numeric' }),
-      weekly: 'Week ' + this.isoWeek(now),
-      monthly: now.toLocaleDateString('en-GB', { month: 'long', year: 'numeric' }),
-      history: 'History',
-    }
-    const metas: Dict = {
-      daily: 'Week ' + this.isoWeek(now) + ' · ' + now.getFullYear(),
-      weekly: this.weekRange(),
-      monthly: 'Month ' + (now.getMonth() + 1) + ' of 12',
-      history: 'Past weeks & months',
-    }
-
-    const doneCount = s.tasks.filter((x) => x.done).length
-    const leadStreak = this.streak('leadDone')
-    const postStreak = this.streak('postDone')
-
-    const ym = now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0')
-    const parseAmt = (v: any) => Number(String(v == null ? '' : v).replace(/[^0-9.]/g, '')) || 0
-    const madeNum = parseAmt(s.revMadeByMonth[ym])
-    const goalNum = parseAmt(s.revGoal)
+    /* --- revenue --- */
+    const ym = monthTagOf(now)
+    const madeNum = parseAmount(s.revMadeByMonth[ym])
+    const goalNum = parseAmount(s.revGoal)
+    const revMap = revenueByMonth(s.archive, s.revMadeByMonth)
+    const yearTotalNum = Object.keys(revMap)
+      .filter((k) => k.indexOf(now.getFullYear() + '-') === 0)
+      .reduce((a, k) => a + revMap[k], 0)
     const revPct = goalNum > 0 ? Math.min(999, Math.round((madeNum / goalNum) * 100)) : 0
     const revFilled = goalNum > 0 ? Math.max(0, Math.min(10, Math.floor((madeNum / goalNum) * 10))) : 0
+    const yearGoalNum = goalNum * 12
+    const yearPct = yearGoalNum > 0 ? Math.min(999, Math.round((yearTotalNum / yearGoalNum) * 100)) : 0
+    const yearFilled = yearGoalNum > 0 ? Math.max(0, Math.min(10, Math.floor((yearTotalNum / yearGoalNum) * 10))) : 0
 
-    const isDaily = s.activeTab === 'daily'
-    const isWeekly = s.activeTab === 'weekly'
-    const isMonthly = s.activeTab === 'monthly'
-    const isHistory = s.activeTab === 'history'
+    /* --- calendar --- */
+    const dim = daysInMonth(now)
+    const dayOfMonth = now.getDate()
+    const daysLeftMonth = dim - dayOfMonth
+    const expected = goalNum * (dayOfMonth / dim)
+    const perDay = Math.ceil((goalNum - madeNum) / Math.max(1, dim - dayOfMonth + 1))
+    const elapsed = elapsedDaysThisWeek(now)
+    const daysLeftWeek = 7 - elapsed
+    const dayOfYearLabel = 'D' + dayOfYear(now) + ' / 365'
+    const monthLeftLabel = 'T−' + pad(daysLeftMonth) + 'D'
 
-    const taskRows = this.listRows('tasks')
-    const workRows = taskRows.filter((r) => r.category === 'work')
-    const miscRows = taskRows.filter((r) => r.category !== 'work')
-    const milestoneRows = this.listRows('milestones')
-    const leadDots = this.dots('leadDone')
-    const postDots = this.dots('postDone')
+    /* --- intention --- */
+    const dayIntent = (t.intention || '').trim()
+    const intentStreak = this.streak('topDone')
+    const nudgeText = dayIntent && !t.topDone && intentStreak > 0 ? 'STREAK ' + pad(intentStreak) + 'D · NOT YET TODAY' : ''
+    const touchLabel = !dayIntent
+      ? 'NO INTENTION SET'
+      : t.topDone
+        ? 'COMPLETED · STREAK ' + pad(intentStreak) + 'D'
+        : 'NOT YET COMPLETED'
 
-    const tabs = ['Daily', 'Weekly', 'Monthly', 'History'].map((label) => {
-      const id = label.toLowerCase()
-      return { label, active: s.activeTab === id, onClick: () => this.setState({ activeTab: id }, () => this.detectRollover()) }
-    })
+    /* --- lists --- */
+    const workRows = this.taskRows('work')
+    const miscRows = this.taskRows('misc')
+    const doneCount = s.tasks.filter((x) => x.done).length
+    const openCount = s.tasks.length - doneCount
+    const msDone = s.milestones.filter((m) => m.done).length
+    const msTotal = s.milestones.length
+    const openTasks = s.tasks.filter((x) => !x.done && (x.text || '').trim())
+
+    /* --- archive --- */
+    const entries = buildEntries(s.archive, s, currency, now)
+    const detail = monthDetail(entries, s.openPeriod)
+
+    const titles: Record<string, string> = {
+      today: now.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }).toUpperCase() + ' ' + now.getFullYear(),
+      week: 'WEEK ' + pad(isoWeek(now)),
+      month: now.toLocaleDateString('en-GB', { month: 'long' }).toUpperCase() + ' ' + now.getFullYear(),
+      timeline: detail ? monthLabelFromTag(s.openPeriod!).toUpperCase() : 'ARCHIVE',
+    }
+    const kickers: Record<string, string> = {
+      today: now.toLocaleDateString('en-GB', { weekday: 'long' }).toUpperCase(),
+      week: weekRange(now),
+      month: 'MONTH ' + pad(now.getMonth() + 1) + ' OF 12',
+      timeline: detail ? (detail.live ? 'IN PROGRESS' : 'ARCHIVED') : 'ALL PERIODS',
+    }
+
+    const isTimeline = s.activeTab === 'timeline'
+    const navItems = [
+      { key: 'today', label: 'Today', meta: openCount > 0 ? pad(openCount) : '' },
+      { key: 'week', label: 'Week', meta: pad(daysLeftWeek) + 'D' },
+      { key: 'month', label: 'Month', meta: goalNum > 0 ? revPct + '%' : '' },
+      { key: 'timeline', label: 'Archive', meta: s.archive.length ? pad(s.archive.length) : '' },
+    ].map((it, i) => ({
+      ...it,
+      idx: pad(i + 1),
+      active: s.activeTab === it.key,
+      onClick: () => this.setState({ activeTab: it.key }, () => this.detectRollover()),
+    }))
 
     return (
-      <>
-      <div style={css('min-height:100vh;padding:20px')}>
-        <div style={{ display: 'contents', ['--accent' as any]: accent }}>
-          <div style={css('max-width:none;margin:0;min-height:calc(100vh - 40px);background:#f7f4ee;border:1px solid #e0d9ca;box-shadow:0 2px 16px rgba(60,50,30,0.08);border-radius:2px')}>
-            {/* ---------- header ---------- */}
-            <div style={css('padding:28px 40px 0')}>
-              <div style={css('display:flex;justify-content:space-between;align-items:baseline')}>
-                <span style={css('font-size:15.2px;font-weight:600;letter-spacing:0.18em;color:#8a8175')}>SIGNAL — LEDGER</span>
-                <div style={css('display:flex;gap:20px')}>
-                  {tabs.map((tab) => (
-                    <button key={tab.label} onClick={tab.onClick} className={'tab ' + (tab.active ? 'active' : 'inactive')}>
-                      {tab.label}
-                    </button>
-                  ))}
-                </div>
-              </div>
-              <div style={css('display:flex;justify-content:space-between;align-items:baseline;margin-top:18px;padding-bottom:22px;border-bottom:1px solid #e3ddd0')}>
-                <h1 style={css("margin:0;font-family:'Source Serif 4',serif;font-size:44.9px;font-weight:600;letter-spacing:-0.01em;color:#1c1917")}>{titles[s.activeTab]}</h1>
-                <span style={css("font-family:'Source Serif 4',serif;font-style:italic;font-size:20.3px;color:#8a8175")}>{metas[s.activeTab]}</span>
-              </div>
-              {/* revenue bar */}
-              <div style={css('display:flex;align-items:center;gap:14px;padding:12px 0 13px')}>
-                <span style={css('font-size:15.2px;font-weight:600;letter-spacing:0.14em;color:#8a8175;flex:none')}>
-                  {'PROJECT REVENUE — ' + now.toLocaleDateString('en-GB', { month: 'long' }).toUpperCase()}
-                </span>
-                <div style={css('display:flex;gap:3px;flex:none')}>
-                  {Array.from({ length: 10 }, (_, i) => (
-                    <span key={i} style={css('display:block;width:16px;height:6px;border-radius:2px;background:' + (i < revFilled ? 'var(--accent,#7c2d12)' : '#ded7c8'))} />
-                  ))}
-                </div>
-                <span style={css('font-size:15.9px;font-weight:600;color:var(--accent,#7c2d12);flex:none')}>{goalNum > 0 ? revPct + '%' : '—'}</span>
-                <span style={css('flex:1')} />
-                <div style={css('display:flex;align-items:baseline;gap:6px;flex:none')}>
-                  <span style={css("font-family:'Source Serif 4',serif;font-size:19.6px;font-weight:600;color:#1c1917")}>{currency}</span>
-                  <input
-                    type="text"
-                    value={s.revMadeByMonth[ym] ?? ''}
-                    onChange={(e) => { const v = e.target.value; this.setState((p) => ({ revMadeByMonth: { ...p.revMadeByMonth, [ym]: v } })) }}
-                    placeholder="0"
-                    aria-label="Made this month"
-                    className="uin ul"
-                    style={css("width:70px;font-family:'Source Serif 4',serif;font-size:21.8px;font-weight:600;color:#1c1917;padding:2px 0;text-align:right")}
-                  />
-                  <span style={css('font-size:16.7px;color:#8a8175')}>of</span>
-                  <span style={css("font-family:'Source Serif 4',serif;font-size:18.8px;color:#8a8175")}>{currency}</span>
-                  <input
-                    type="text"
-                    value={s.revGoal}
-                    onChange={(e) => this.setState({ revGoal: e.target.value })}
-                    placeholder="goal"
-                    aria-label="Monthly goal"
-                    className="uin ul"
-                    style={css("width:60px;font-family:'Source Serif 4',serif;font-size:19.6px;color:#8a8175;padding:2px 0;text-align:right")}
-                  />
-                </div>
-              </div>
-              {/* values & mantras — daily only */}
-              {isDaily && (
-                <div style={css('padding:13px 0 16px;border-top:1px solid #e3ddd0')}>
-                  <div style={css('display:flex;flex-wrap:wrap;align-items:baseline;gap:14px')}>
-                    {MANTRAS.map((m, idx) => (
-                      <span key={m} style={css('display:flex;align-items:baseline;gap:14px;max-width:100%')}>
-                        {idx > 0 && <span style={css('font-size:20.3px;color:#b5ab9a;flex:none')}>·</span>}
-                        <span style={css("font-family:'Source Serif 4',serif;font-style:italic;font-size:20.3px;color:#8a8175")}>{m}</span>
-                      </span>
-                    ))}
-                  </div>
-                  <blockquote style={css("margin:12px 0 0;max-width:76ch;font-family:'Source Serif 4',serif;font-style:italic;font-size:18.1px;line-height:1.55;color:#a89f90")}>
-                    {QUOTE.text}
-                    <span style={css('display:block;margin-top:5px;font-style:normal;font-size:15.2px;letter-spacing:0.08em;color:#b5ab9a')}>
-                      {'— ' + QUOTE.author}
-                    </span>
-                  </blockquote>
-                </div>
-              )}
-            </div>
+      <div style={{ display: 'contents', ['--accent' as any]: accent }}>
+        <Shell
+          navItems={navItems}
+          email={this.props.email ?? ''}
+          onSignOut={this.props.onSignOut}
+          dayOfYearLabel={dayOfYearLabel}
+          weekLabel={'W' + pad(isoWeek(now))}
+          quarterLabel={'Q' + (Math.floor(now.getMonth() / 3) + 1)}
+          intentionBtnLabel={dayIntent ? 'INTENTION SET' : 'START OF DAY'}
+          onOpenIntention={() => this.setState({ intentionOpen: true })}
+          onOpenReflection={() => this.setState({ reflectionOpen: true })}
+          pageKicker={kickers[s.activeTab]}
+          pageTitle={titles[s.activeTab]}
+          revHeaderLabel={
+            isTimeline
+              ? 'REVENUE · ' + now.getFullYear()
+              : 'REVENUE · ' + now.toLocaleDateString('en-GB', { month: 'short' }).toUpperCase()
+          }
+          revPctLabel={isTimeline ? (yearGoalNum > 0 ? yearPct + '%' : '—') : goalNum > 0 ? revPct + '%' : '—'}
+          revTotal={(isTimeline ? yearTotalNum : madeNum).toLocaleString('en-US')}
+          revFilled={isTimeline ? yearFilled : revFilled}
+        >
+          {s.activeTab === 'today' && (
+            <Today
+              quoteOpen={s.quoteSeen !== todayKey}
+              onDismissQuote={() => this.setState({ quoteSeen: todayKey })}
+              onRecallQuote={() => this.setState({ quoteSeen: '' })}
+              dayOfYearLabel={dayOfYearLabel}
+              intentionText={t.intention || ''}
+              setIntention={(e) => this.setToday({ intention: e.target.value })}
+              onOpenIntention={() => this.setState({ intentionOpen: true })}
+              statusText={nudgeText || touchLabel}
+              statusIsNudge={!!nudgeText}
+              weekDots={this.weekDots('topDone')}
+              topDone={!!t.topDone}
+              toggleTop={() => this.setToday({ topDone: !this.today().topDone })}
+              workRows={workRows}
+              miscRows={miscRows}
+              workCountLabel={pad(workRows.filter((r) => r.done).length) + '/' + pad(workRows.length)}
+              miscCountLabel={pad(miscRows.filter((r) => r.done).length) + '/' + pad(miscRows.length)}
+              nextWorkIdx={pad(workRows.length + 1)}
+              nextMiscIdx={pad(miscRows.length + 1)}
+              newWorkTask={s.newWorkTask}
+              setNewWorkTask={(e) => this.setState({ newWorkTask: e.target.value })}
+              onWorkKey={this.commit('tasks', 'newWorkTask', 'work')}
+              newMiscTask={s.newMiscTask}
+              setNewMiscTask={(e) => this.setState({ newMiscTask: e.target.value })}
+              onMiscKey={this.commit('tasks', 'newMiscTask', 'misc')}
+              progressLabel={pad(doneCount) + ' / ' + pad(s.tasks.length) + ' CLEARED'}
+              onPurge={() => this.setState((prev) => ({ tasks: prev.tasks.filter((x) => !x.done) }))}
+              leadDone={t.leadDone}
+              leadWho={t.leadWho}
+              setLeadWho={(e) => this.setToday({ leadWho: e.target.value })}
+              toggleLead={() => this.setToday({ leadDone: !this.today().leadDone })}
+              leadDots={this.dots('leadDone')}
+              leadStreakLabel={'STREAK ' + pad(this.streak('leadDone'))}
+              postDone={t.postDone}
+              postWhat={t.postWhat}
+              setPostWhat={(e) => this.setToday({ postWhat: e.target.value })}
+              togglePost={() => this.setToday({ postDone: !this.today().postDone })}
+              postDots={this.dots('postDone')}
+              postStreakLabel={'STREAK ' + pad(this.streak('postDone'))}
+              monthFocus={s.monthFocus}
+              setMonthFocus={(e) => this.setState({ monthFocus: e.target.value })}
+              monthLeftLabel={monthLeftLabel}
+              msCountLabel={pad(msDone) + '/' + pad(msTotal)}
+              msDone={msDone}
+              msTotal={msTotal}
+              openMilestones={this.listRows('milestones').filter((r) => !r.done).slice(0, 3)}
+              milestoneEmptyLabel={msTotal > 0 ? 'ALL COMPLETE' : 'NONE SET'}
+            />
+          )}
 
-            {/* ---------- DAILY ---------- */}
-            {isDaily && (
-              <div style={css('display:grid;grid-template-columns:1.2fr 1fr')}>
-                {/* today's list */}
-                <div style={css('padding:26px 32px 32px 40px;border-right:1px solid #e3ddd0')}>
-                  {this.renderTaskSection({ title: 'WORK', rows: workRows, variant: 'work', draftKey: 'newWorkTask' })}
-                  {this.renderTaskSection({ title: 'MISC', rows: miscRows, variant: 'misc', draftKey: 'newMiscTask' })}
-                  <div style={css('margin-top:24px;padding-top:14px;border-top:1px solid #e3ddd0;display:flex;justify-content:space-between;align-items:center;font-size:16.7px;color:#8a8175')}>
-                    <span>{s.tasks.length === 0 ? 'Nothing planned yet' : doneCount + ' of ' + s.tasks.length + ' complete'}</span>
-                    <div style={css('display:flex;align-items:center;gap:14px')}>
-                      <button onClick={() => this.setState((prev) => ({ tasks: prev.tasks.filter((x) => !x.done) }))} className="linkbtn" style={css('font-size:16.7px')}>
-                        Clear completed
-                      </button>
-                    </div>
-                  </div>
-                </div>
+          {s.activeTab === 'week' && (
+            <Week
+              weekTheme={s.weekTheme}
+              setWeekTheme={(e) => this.setState({ weekTheme: e.target.value })}
+              priorityRows={s.priorities.map((text, idx) => ({
+                key: idx,
+                idx: pad(idx + 1),
+                text,
+                placeholder: idx === 0 ? 'the one thing that matters this week…' : 'priority ' + (idx + 1) + '…',
+                onChange: (e) => {
+                  const v = e.target.value
+                  this.setState((prev) => {
+                    const p = prev.priorities.slice()
+                    p[idx] = v
+                    return { priorities: p }
+                  })
+                },
+                del: () => this.setState((prev) => ({ priorities: prev.priorities.filter((_, i) => i !== idx) })),
+              }))}
+              nextPriorityIdx={pad(s.priorities.length + 1)}
+              newPriority={s.newPriority}
+              setNewPriority={(e) => this.setState({ newPriority: e.target.value })}
+              onPriorityKey={this.commitText('priorities', 'newPriority')}
+              reviewRows={s.reviewItems.map((it) => ({
+                key: it.id,
+                text: it.text,
+                onChange: (e) => {
+                  const v = e.target.value
+                  this.setState((prev) => ({
+                    reviewItems: prev.reviewItems.map((x) => (x.id === it.id ? { ...x, text: v } : x)),
+                  }))
+                },
+                del: () => this.setState((prev) => ({ reviewItems: prev.reviewItems.filter((x) => x.id !== it.id) })),
+              }))}
+              newReview={s.newReview}
+              setNewReview={(e) => this.setState({ newReview: e.target.value })}
+              onReviewKey={this.commit('reviewItems', 'newReview')}
+              weekLeftLabel={pad(daysLeftWeek) + 'D LEFT'}
+              score={[
+                { key: 'top', label: 'Intention completed', value: pad(this.countThisWeek('topDone')) + '/' + pad(elapsed) },
+                { key: 'lead', label: 'One Lead', value: pad(this.countThisWeek('leadDone')) + '/' + pad(elapsed) },
+                { key: 'post', label: 'One Post', value: pad(this.countThisWeek('postDone')) + '/' + pad(elapsed) },
+                { key: 'wins', label: 'Evidence logged', value: pad(s.reviewItems.length) },
+              ]}
+            />
+          )}
 
-                {/* daily reps + gratitude */}
-                <div style={css('padding:26px 40px 32px 32px;display:flex;flex-direction:column;gap:26px')}>
-                  <div>
-                    <div style={css('font-size:15.2px;font-weight:600;letter-spacing:0.14em;color:#8a8175;margin-bottom:12px')}>DAILY REPS</div>
-                    <div style={css('border:1px solid #ded7c8;border-radius:6px;background:#fdfcf9')}>
-                      {/* One Lead */}
-                      <div style={css('padding:14px 16px;border-bottom:1px solid #eee8db')}>
-                        <div style={css('display:flex;justify-content:space-between;align-items:center')}>
-                          <span style={css("font-family:'Source Serif 4',serif;font-weight:600;font-size:21.8px;color:#1c1917")}>One Lead</span>
-                          {this.check(t.leadDone, () => this.setToday({ leadDone: !this.today().leadDone }), 20, 'Toggle One Lead')}
-                        </div>
-                        <div style={css('font-size:16.7px;color:#a89f90;margin-top:2px')}>One new person or org that could bring business.</div>
-                        <input
-                          type="text"
-                          value={t.leadWho}
-                          onChange={(e) => this.setToday({ leadWho: e.target.value })}
-                          placeholder="Who — person or organisation…"
-                          className="uin ul-e"
-                          style={css('width:100%;font-size:18.1px;color:#44403c;padding:7px 0 5px;margin-top:4px')}
-                        />
-                        <div style={css('display:flex;align-items:center;justify-content:space-between;margin-top:11px')}>
-                          <div style={css('display:flex;gap:3px')}>{this.renderDots(leadDots)}</div>
-                          <span style={css('font-size:15.9px;font-weight:600;color:var(--accent,#7c2d12)')}>{leadStreak === 0 ? 'start today' : leadStreak + '-day streak'}</span>
-                        </div>
-                      </div>
-                      {/* One Post */}
-                      <div style={css('padding:14px 16px')}>
-                        <div style={css('display:flex;justify-content:space-between;align-items:center')}>
-                          <span style={css("font-family:'Source Serif 4',serif;font-weight:600;font-size:21.8px;color:#1c1917")}>One Post</span>
-                          {this.check(t.postDone, () => this.setToday({ postDone: !this.today().postDone }), 20, 'Toggle One Post')}
-                        </div>
-                        <div style={css('font-size:16.7px;color:#a89f90;margin-top:2px')}>Publish one piece of content, every day.</div>
-                        <input
-                          type="text"
-                          value={t.postWhat}
-                          onChange={(e) => this.setToday({ postWhat: e.target.value })}
-                          placeholder="What went out — post, clip, article…"
-                          className="uin ul-e"
-                          style={css('width:100%;font-size:18.1px;color:#44403c;padding:7px 0 5px;margin-top:4px')}
-                        />
-                        <div style={css('display:flex;align-items:center;justify-content:space-between;margin-top:11px')}>
-                          <div style={css('display:flex;gap:3px')}>{this.renderDots(postDots)}</div>
-                          <span style={css('font-size:15.9px;font-weight:600;color:var(--accent,#7c2d12)')}>{postStreak === 0 ? 'start today' : postStreak + '-day streak'}</span>
-                        </div>
-                      </div>
-                    </div>
-                    <div style={css('font-size:15.2px;color:#b5ab9a;margin-top:8px;text-align:right')}>last 14 days</div>
-                  </div>
+          {s.activeTab === 'month' && (
+            <Month
+              monthFocus={s.monthFocus}
+              setMonthFocus={(e) => this.setState({ monthFocus: e.target.value })}
+              milestoneRows={this.listRows('milestones')}
+              msCountLabel={pad(msDone) + '/' + pad(msTotal)}
+              nextMilestoneIdx={pad(msTotal + 1)}
+              newMilestone={s.newMilestone}
+              setNewMilestone={(e) => this.setState({ newMilestone: e.target.value })}
+              onMilestoneKey={this.commit('milestones', 'newMilestone')}
+              currency={currency}
+              revMade={s.revMadeByMonth[ym] ?? ''}
+              setRevMade={(e) => {
+                const v = e.target.value
+                this.setState((p) => ({ revMadeByMonth: { ...p.revMadeByMonth, [ym]: v } }))
+              }}
+              revGoal={s.revGoal}
+              setRevGoal={(e) => this.setState({ revGoal: e.target.value })}
+              revFilled={revFilled}
+              monthLeftLabel={monthLeftLabel}
+              paceLines={[
+                {
+                  key: 'exp',
+                  label: 'Should be at, day ' + dayOfMonth,
+                  value: goalNum > 0 ? currency + Math.round(expected).toLocaleString('en-US') : '—',
+                },
+                {
+                  key: 'gap',
+                  label: madeNum >= expected ? 'Ahead by' : 'Gap to pace',
+                  value: goalNum > 0 ? currency + Math.abs(Math.round(madeNum - expected)).toLocaleString('en-US') : '—',
+                },
+                {
+                  key: 'run',
+                  label: 'Per remaining day',
+                  value: goalNum > 0 && madeNum < goalNum ? currency + perDay.toLocaleString('en-US') : '—',
+                },
+              ]}
+              monthObs={s.monthObs}
+              setMonthObs={(e) => this.setState({ monthObs: e.target.value })}
+              monthCorr={s.monthCorr}
+              setMonthCorr={(e) => this.setState({ monthCorr: e.target.value })}
+            />
+          )}
 
-                  {/* gratitude */}
-                  <div>
-                    <div style={css('display:flex;justify-content:space-between;align-items:baseline;margin-bottom:12px')}>
-                      <span style={css('font-size:15.2px;font-weight:600;letter-spacing:0.14em;color:#8a8175')}>THINGS I'M GRATEFUL FOR</span>
-                    </div>
-                    <div style={css('display:flex;flex-direction:column;gap:6px')}>
-                      {[0, 1, 2].map((idx) => (
-                        <input
-                          key={idx}
-                          type="text"
-                          value={t.gratitude[idx] || ''}
-                          onChange={(e) => { const g = [...this.today().gratitude]; g[idx] = e.target.value; this.setToday({ gratitude: g }) }}
-                          placeholder={idx === 0 ? 'What went right today…' : '…'}
-                          className="uin ul"
-                          style={css("width:100%;font-family:'Source Serif 4',serif;font-style:italic;font-size:20.3px;color:#44403c;padding:8px 0 7px")}
-                        />
-                      ))}
-                    </div>
-                  </div>
-                </div>
-              </div>
-            )}
+          {isTimeline && (
+            <Archive
+              cards={monthCards(entries)}
+              detail={detail}
+              onOpen={(tag) => this.setState({ openPeriod: tag })}
+              onClose={() => this.setState({ openPeriod: null })}
+            />
+          )}
+        </Shell>
 
-            {/* ---------- WEEKLY ---------- */}
-            {isWeekly && (
-              <div style={css('padding:26px 40px 36px;display:flex;flex-direction:column;gap:30px')}>
-                <div>
-                  <div style={css('font-size:15.2px;font-weight:600;letter-spacing:0.14em;color:#8a8175;margin-bottom:12px')}>THE WEEK'S FOCUS</div>
-                  <input
-                    type="text"
-                    value={s.weekTheme}
-                    onChange={(e) => this.setState({ weekTheme: e.target.value })}
-                    placeholder="What is this week about?"
-                    className="uin ul-strong"
-                    style={css("width:100%;font-family:'Source Serif 4',serif;font-size:30.4px;font-weight:600;color:#1c1917;padding:2px 0 10px")}
-                  />
-                  <div style={css('display:flex;flex-direction:column;margin-top:18px')}>
-                    {s.priorities.map((text, idx) => (
-                      <div key={idx} style={css('display:flex;gap:14px;align-items:center;padding:6px 0;border-bottom:1px solid #eae4d8')}>
-                        <span style={css("font-family:'Source Serif 4',serif;font-size:21.8px;font-weight:600;color:var(--accent,#7c2d12);width:16px;flex:none")}>{idx + 1}</span>
-                        <input
-                          type="text"
-                          value={text}
-                          onChange={(e) => { const v = e.target.value; this.setState((prev) => { const p = [...prev.priorities]; p[idx] = v; return { priorities: p } }) }}
-                          placeholder={idx === 0 ? 'Most important thing this week…' : 'Priority ' + (idx + 1) + '…'}
-                          className="uin"
-                          style={css('flex:1;min-width:0;font-size:20.3px;color:#1c1917;font-weight:500;padding:4px 0')}
-                        />
-                        {this.delBtn(() => this.setState((prev) => ({ priorities: prev.priorities.filter((_, i) => i !== idx) })), 'Delete priority', true)}
-                      </div>
-                    ))}
-                    <div style={css('display:flex;gap:14px;align-items:center;padding:8px 0')}>
-                      <span style={css('width:16px;height:18px;display:flex;align-items:center;justify-content:center;color:#b5ab9a;flex:none')}>
-                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-                          <line x1="12" y1="5" x2="12" y2="19" />
-                          <line x1="5" y1="12" x2="19" y2="12" />
-                        </svg>
-                      </span>
-                      <input
-                        type="text"
-                        value={s.newPriority}
-                        onChange={(e) => this.setState({ newPriority: e.target.value })}
-                        onKeyDown={this.commitText('priorities', 'newPriority')}
-                        placeholder="add a priority, press Enter…"
-                        className="uin"
-                        style={css("flex:1;min-width:0;font-family:'Source Serif 4',serif;font-style:italic;font-size:20.3px;color:#44403c;padding:4px 0")}
-                      />
-                    </div>
-                  </div>
-                </div>
+        {s.intentionOpen && (
+          <IntentionModal
+            dayOfYearLabel={dayOfYearLabel}
+            intentionText={t.intention || ''}
+            setIntention={(e) => this.setToday({ intention: e.target.value })}
+            options={openTasks.map((x) => ({
+              key: x.id,
+              text: x.text,
+              selected: (x.text || '').trim() === dayIntent,
+              tag: x.category === 'work' ? 'WORK' : 'MISC',
+              pick: () => this.setToday({ intention: x.text }),
+            }))}
+            onClose={() => this.setState({ intentionOpen: false })}
+          />
+        )}
 
-                <div>
-                  <div style={css('display:flex;justify-content:space-between;align-items:baseline;margin-bottom:12px')}>
-                    <span style={css('font-size:15.2px;font-weight:600;letter-spacing:0.14em;color:#8a8175')}>WEEK IN REVIEW</span>
-                    <span style={css("font-family:'Source Serif 4',serif;font-style:italic;font-size:18.1px;color:#a89f90")}>What exists now that didn't a week ago?</span>
-                  </div>
-                  <div style={css('border:1px solid #ded7c8;border-radius:6px;background:#fdfcf9;padding:16px 18px')}>
-                    <div style={css('display:flex;flex-direction:column')}>
-                      {s.reviewItems.map((it) => (
-                        <div key={it.id} style={css('display:flex;gap:12px;align-items:center;padding:3px 0;border-bottom:1px solid #eee8db')}>
-                          <span style={css('width:5px;height:5px;border-radius:99px;background:var(--accent,#7c2d12);flex:none')} />
-                          <input
-                            type="text"
-                            value={it.text}
-                            onChange={(e) => { const v = e.target.value; this.setState((prev) => ({ reviewItems: prev.reviewItems.map((x) => (x.id === it.id ? { ...x, text: v } : x)) })) }}
-                            placeholder="…"
-                            className="uin"
-                            style={css('flex:1;min-width:0;font-size:19.6px;color:#44403c;padding:6px 0')}
-                          />
-                          {this.delBtn(() => this.setState((prev) => ({ reviewItems: prev.reviewItems.filter((x) => x.id !== it.id) })), 'Delete item')}
-                        </div>
-                      ))}
-                      <div style={css('display:flex;gap:12px;align-items:center;padding:6px 0 0')}>
-                        <span style={css('width:5px;height:5px;border-radius:99px;background:#ded7c8;flex:none')} />
-                        <input
-                          type="text"
-                          value={s.newReview}
-                          onChange={(e) => this.setState({ newReview: e.target.value })}
-                          onKeyDown={this.commit('reviewItems', 'newReview')}
-                          placeholder="add evidence, press Enter…"
-                          className="uin"
-                          style={css("flex:1;min-width:0;font-family:'Source Serif 4',serif;font-style:italic;font-size:19.6px;color:#44403c;padding:4px 0")}
-                        />
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            )}
+        {s.reflectionOpen && (
+          <ReflectionModal
+            dayOfYearLabel={dayOfYearLabel}
+            dayTitle={titles.today}
+            lines={[
+              { key: 'top', label: 'Intention completed', value: t.topDone ? 'YES' : 'NO' },
+              { key: 'lead', label: 'One Lead', value: t.leadDone ? 'YES' : 'NO' },
+              { key: 'post', label: 'One Post', value: t.postDone ? 'YES' : 'NO' },
+              { key: 'tasks', label: 'Tasks cleared', value: pad(doneCount) + ' / ' + pad(s.tasks.length) },
+            ]}
+            wentWell={t.wentWell || ''}
+            setWentWell={(e) => this.setToday({ wentWell: e.target.value })}
+            improve={t.improve || ''}
+            setImprove={(e) => this.setToday({ improve: e.target.value })}
+            gratitude={(t.gratitude || []).filter(Boolean).join('\n')}
+            setGratitude={(e) => this.setToday({ gratitude: e.target.value.split('\n') })}
+            onClose={() => this.setState({ reflectionOpen: false })}
+          />
+        )}
 
-            {/* ---------- MONTHLY ---------- */}
-            {isMonthly && (
-              <div style={css('padding:26px 40px 36px;display:flex;flex-direction:column;gap:30px')}>
-                <div>
-                  <div style={css('font-size:15.2px;font-weight:600;letter-spacing:0.14em;color:#8a8175;margin-bottom:12px')}>PRIMARY FOCUS</div>
-                  <input
-                    type="text"
-                    value={s.monthFocus}
-                    onChange={(e) => this.setState({ monthFocus: e.target.value })}
-                    placeholder="One main theme for the month…"
-                    className="uin ul-strong"
-                    style={css("width:100%;font-family:'Source Serif 4',serif;font-size:34.8px;font-weight:600;color:#1c1917;padding:2px 0 10px")}
-                  />
-                </div>
-
-                <div>
-                  <div style={css('font-size:15.2px;font-weight:600;letter-spacing:0.14em;color:#8a8175;margin-bottom:8px')}>MILESTONES</div>
-                  <div style={css('display:flex;flex-direction:column')}>
-                    {milestoneRows.map((row) => (
-                      <div key={row.key} style={css('display:flex;gap:12px;align-items:center;padding:4px 0;border-bottom:1px solid #eae4d8')}>
-                        {this.check(row.done, row.toggle, 18, row.done ? 'Mark not done' : 'Mark done')}
-                        <input type="text" value={row.text} onChange={row.onChange} placeholder="…" className="uin" style={row.inputStyle} />
-                        {this.delBtn(row.del, 'Delete milestone', true)}
-                      </div>
-                    ))}
-                    <div style={css('display:flex;gap:12px;align-items:center;padding:8px 0')}>
-                      <span style={css('width:18px;height:18px;display:flex;align-items:center;justify-content:center;color:#b5ab9a;flex:none')}>
-                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-                          <line x1="12" y1="5" x2="12" y2="19" />
-                          <line x1="5" y1="12" x2="19" y2="12" />
-                        </svg>
-                      </span>
-                      <input
-                        type="text"
-                        value={s.newMilestone}
-                        onChange={(e) => this.setState({ newMilestone: e.target.value })}
-                        onKeyDown={this.commit('milestones', 'newMilestone')}
-                        placeholder="add a milestone, press Enter…"
-                        className="uin"
-                        style={css("flex:1;min-width:0;font-family:'Source Serif 4',serif;font-style:italic;font-size:20.3px;color:#44403c;padding:4px 0")}
-                      />
-                    </div>
-                  </div>
-                </div>
-
-                <div>
-                  <div style={css('display:flex;justify-content:space-between;align-items:baseline;margin-bottom:12px')}>
-                    <span style={css('font-size:15.2px;font-weight:600;letter-spacing:0.14em;color:#8a8175')}>MONTH-END CHECK-IN</span>
-                    <span style={css("font-family:'Source Serif 4',serif;font-style:italic;font-size:18.1px;color:#a89f90")}>Are current actions leading to the dream, or just keeping busy?</span>
-                  </div>
-                  <div style={css('display:grid;grid-template-columns:1fr 1fr;gap:14px')}>
-                    <div style={css('border:1px solid #ded7c8;border-radius:6px;background:#fdfcf9;padding:14px 16px')}>
-                      <div style={css('font-size:15.2px;font-weight:600;letter-spacing:0.1em;color:#a89f90;margin-bottom:8px')}>OBSERVATION — HONEST</div>
-                      <textarea
-                        value={s.monthObs}
-                        onChange={(e) => this.setState({ monthObs: e.target.value })}
-                        placeholder="Look at the evidence…"
-                        className="uin"
-                        style={css('width:100%;height:96px;resize:none;font-size:19.6px;line-height:1.55;color:#44403c;padding:0')}
-                      />
-                    </div>
-                    <div style={css('border:1px solid #ded7c8;border-radius:6px;background:#fdfcf9;padding:14px 16px')}>
-                      <div style={css('font-size:15.2px;font-weight:600;letter-spacing:0.1em;color:var(--accent,#7c2d12);margin-bottom:8px')}>CORRECTION — ACTION</div>
-                      <textarea
-                        value={s.monthCorr}
-                        onChange={(e) => this.setState({ monthCorr: e.target.value })}
-                        placeholder="What changes next month…"
-                        className="uin"
-                        style={css('width:100%;height:96px;resize:none;font-size:19.6px;line-height:1.55;color:#44403c;padding:0')}
-                      />
-                    </div>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {/* ---------- HISTORY ---------- */}
-            {isHistory && <History load={this.props.onLoadHistory} />}
-          </div>
-        </div>
+        {this.renderRollover()}
       </div>
-      {this.renderRollover()}
-      </>
     )
   }
 }

@@ -1,11 +1,27 @@
 :root {
-  --accent: #7c2d12;
+  --accent: #0b6c71;
+  --ground: #eef1f1;
+  --surface: #f8fafa;
+  --surface-raised: #ffffff;
+  --border: #c7d0d0;
+  --border-soft: #d6dddd;
+  --border-hair: #e2e7e7;
+  --border-strong: #a9b4b4;
+  --border-control: #6f7c7d;
+  --ink: #0e1415;
+  --ink-body: #1b2223;
+  --ink-muted: #3d4748;
+  --ink-soft: #55605f;
+  --ink-label: #5a6566;
+  --ink-label-2: #5f6a6b;
+  --ink-faint: #7c8889;
+  --ink-ghost-2: #a9b4b4;
 }
 body {
   margin: 0;
-  background: #eae5da;
-  font-family: 'Inter', system-ui, sans-serif;
-  color: #1c1917;
+  background: var(--ground);
+  font-family: 'Space Grotesk', system-ui, sans-serif;
+  color: var(--ink-body);
   -webkit-font-smoothing: antialiased;
 }
 * {
@@ -18,36 +34,55 @@ textarea {
 }
 input::placeholder,
 textarea::placeholder {
-  color: #b5ab9a;
+  color: var(--ink-label);
   opacity: 1;
 }
+a {
+  color: var(--accent);
+}
+a:hover {
+  color: var(--ink);
+}
 
-/* --- tabs --- */
-.tab {
-  background: none;
+/* --- inputs --- *
+ * .uin is the borderless base; .ul adds the underline that turns accent on
+ * focus. .ul-hair is the lighter divider used inside panels. */
+.uin {
+  background: transparent;
+  outline: none;
   border: none;
-  cursor: pointer;
-  padding: 0 0 3px;
-  font-size: 18.1px;
-  border-bottom: 1.5px solid transparent;
-  transition: color 0.15s;
 }
-.tab.active {
-  color: #1c1917;
-  font-weight: 600;
-  border-bottom-color: #1c1917;
+.ul {
+  border-bottom: 1px solid var(--border-soft);
+  transition: border-color 0.15s;
 }
-.tab.inactive {
-  color: #8a8175;
-  font-weight: 500;
+.ul-hair {
+  border-bottom: 1px solid var(--border-hair);
+  transition: border-color 0.15s;
 }
-.tab.inactive:hover {
-  color: #1c1917;
+.ul-strong {
+  border-bottom: 1px solid var(--border-strong);
+  transition: border-color 0.15s;
+}
+.ul:focus,
+.ul-hair:focus,
+.ul-strong:focus {
+  border-bottom-color: var(--accent);
 }
 
-/* --- check circles --- */
+/* Bordered white textarea inside the modals and the month check-in cards. */
+.ta {
+  background: var(--surface-raised);
+  border: 1px solid var(--border-soft);
+  outline: none;
+  transition: border-color 0.15s;
+}
+.ta:focus {
+  border-color: var(--accent);
+}
+
+/* --- checkboxes: squares, never rounded --- */
 .chk {
-  border-radius: 99px;
   flex: none;
   padding: 0;
   cursor: pointer;
@@ -57,70 +92,192 @@ textarea::placeholder {
 }
 .chk.done {
   border: none;
-  background: var(--accent, #7c2d12);
+  background: var(--accent);
 }
 .chk.todo {
-  border: 1.5px solid #b5ab9a;
+  border: 1px solid var(--border-control);
   background: transparent;
   transition: border-color 0.15s;
 }
+.chk.todo.thick {
+  border-width: 1.5px;
+}
 .chk.todo:hover {
-  border-color: #7c2d12;
+  border-color: var(--accent);
 }
 
-/* --- delete buttons (x) --- */
+/* --- delete (x) buttons: hidden until the row is hovered --- */
 .del {
   background: none;
   border: none;
   cursor: pointer;
   padding: 2px;
   display: flex;
-  color: #b5ab9a;
+  flex: none;
+  color: var(--ink-faint);
   opacity: 0;
   transition: all 0.15s;
 }
 .del.show {
   opacity: 1;
 }
-.del:hover {
+.row:hover .del,
+.del:hover,
+.del:focus-visible {
   opacity: 1;
-  color: #7c2d12;
+}
+.del:hover {
+  color: var(--accent);
 }
 
-/* --- inputs --- */
-.uin {
+/* --- buttons --- */
+.btn-out {
+  font-family: 'JetBrains Mono', monospace;
   background: transparent;
-  outline: none;
-  border: none;
+  border: 1px solid var(--border-strong);
+  color: var(--ink-muted);
+  cursor: pointer;
+  transition: all 0.15s;
 }
-.ul {
-  border-bottom: 1px solid #ded7c8;
+.btn-out:hover {
+  border-color: var(--accent);
+  color: var(--accent);
 }
-.ul:focus {
-  border-bottom-color: #b5ab9a;
+.btn-out-strong {
+  font-family: 'JetBrains Mono', monospace;
+  background: transparent;
+  border: 1px solid var(--border-control);
+  color: var(--ink);
+  cursor: pointer;
+  transition: all 0.15s;
 }
-.ul-e {
-  border-bottom: 1px solid #eee8db;
+.btn-out-strong:hover {
+  border-color: var(--accent);
+  color: var(--accent);
 }
-.ul-e:focus {
-  border-bottom-color: #b5ab9a;
+.btn-pri {
+  font-family: 'JetBrains Mono', monospace;
+  background: var(--accent);
+  color: #ffffff;
+  border: 1px solid var(--accent);
+  font-weight: 700;
+  cursor: pointer;
 }
-.ul-strong {
-  border-bottom: 1px solid #ded7c8;
+.btn-pri:disabled {
+  cursor: default;
+  opacity: 0.7;
 }
-.ul-strong:focus {
-  border-bottom-color: #8a8175;
+.btn-esc {
+  font-family: 'JetBrains Mono', monospace;
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--ink-label-2);
+  cursor: pointer;
+  transition: all 0.15s;
 }
-
-/* --- text link buttons --- */
-.linkbtn {
+.btn-esc:hover {
+  border-color: var(--ink-label-2);
+  color: var(--ink);
+}
+.txtbtn {
+  font-family: 'JetBrains Mono', monospace;
   background: none;
   border: none;
-  cursor: pointer;
   padding: 0;
-  color: #b5ab9a;
+  text-align: left;
+  color: var(--ink-label);
+  cursor: pointer;
   transition: color 0.15s;
 }
-.linkbtn:hover {
-  color: #7c2d12;
+.txtbtn:hover {
+  color: var(--accent);
+}
+
+/* --- sidebar nav rows --- */
+.navrow {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  text-align: left;
+  font-family: 'JetBrains Mono', monospace;
+  background: none;
+  border: none;
+  border-bottom: 1px solid var(--border-soft);
+  border-left: 3px solid transparent;
+  cursor: pointer;
+  padding: 14px 20px;
+  transition: background 0.15s;
+}
+.navrow:hover {
+  background: #f3f6f6;
+}
+.navrow.active {
+  background: var(--ground);
+  border-bottom-color: var(--border);
+  border-left-color: var(--accent);
+  /* 3px trimmed from the left padding so the label stays on the same axis. */
+  padding-left: 17px;
+}
+
+/* --- containers that take an accent border on hover --- */
+.hit {
+  cursor: pointer;
+  transition: border-color 0.15s;
+}
+.hit:hover {
+  border-color: var(--accent);
+}
+
+/* --- app shell --- */
+.shell {
+  display: grid;
+  grid-template-columns: 190px minmax(0, 1fr);
+  min-height: 100vh;
+  background: var(--ground);
+}
+.sidebar {
+  border-right: 1px solid var(--border);
+  padding: 22px 0 16px;
+  display: flex;
+  flex-direction: column;
+}
+.navgroup {
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid var(--border);
+}
+
+/* Below the sidebar's own width plus a usable column, stack the shell so the
+   content column never gets squeezed into a gutter. */
+@media (max-width: 760px) {
+  .shell {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .sidebar {
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+    padding: 18px 0 0;
+  }
+  .navgroup {
+    flex-direction: row;
+    flex-wrap: wrap;
+  }
+  .navgroup .navrow {
+    width: auto;
+    flex: 1 1 auto;
+  }
+  .sidebar > :last-child {
+    margin-top: 12px;
+    padding-bottom: 12px;
+  }
+}
+
+/* Every screen's column grid. min() keeps the track from overflowing a
+   viewport narrower than the 330px floor. */
+.cols {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(330px, 100%), 1fr));
+  gap: 32px;
+  align-items: start;
 }
