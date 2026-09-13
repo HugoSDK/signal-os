@@ -1,4 +1,4 @@
-import React from 'react'
+import React, { useState } from 'react'
 import { C, Logo, MONO, Pips, css } from './ui'
 
 export interface NavItem {
@@ -24,12 +24,54 @@ interface Props {
   pageTitle: string
   revHeaderLabel: string
   revPctLabel: string
+  /** Display value — thousands-separated, shown while the field is unfocused. */
   revTotal: string
+  /** The stored string, shown while editing so digits can be typed plainly. */
+  revRaw: string
+  /** False on Archive, where the figure is a derived year total. */
+  revEditable: boolean
+  setRevMade: (e: React.ChangeEvent<HTMLInputElement>) => void
   revFilled: number
   children?: React.ReactNode
 }
 
 const chip = css(`background:${C.surface};border:1px solid ${C.border};padding:4px 11px`)
+
+const figureStyle = css(
+  `width:100%;font-family:${MONO};font-size:34px;font-weight:500;letter-spacing:-0.02em;color:${C.ink};line-height:1`
+)
+
+/**
+ * The month's revenue, editable in place. Shows the thousands-separated value
+ * at rest and the raw stored string once focused, so typing isn't fighting a
+ * comma that moves under the cursor. Read-only on Archive, where the figure is
+ * a year total summed across months rather than a single stored value.
+ */
+function RevenueFigure(p: {
+  display: string
+  raw: string
+  editable: boolean
+  onChange: (e: React.ChangeEvent<HTMLInputElement>) => void
+}) {
+  const [editing, setEditing] = useState(false)
+  if (!p.editable) return <div style={figureStyle}>{p.display}</div>
+  return (
+    <input
+      type="text"
+      value={editing ? p.raw : p.display}
+      onChange={p.onChange}
+      onFocus={() => setEditing(true)}
+      onBlur={() => setEditing(false)}
+      placeholder="0"
+      aria-label="Made this month"
+      className="uin ul"
+      // size=1 so the input's intrinsic width doesn't widen the panel past its
+      // designed 260px; the width comes from figureStyle instead.
+      size={1}
+      style={{ ...figureStyle, minWidth: 0, padding: '0 0 3px' }}
+    />
+  )
+}
 
 export default function Shell(props: Props) {
   const { navItems, email, onSignOut } = props
@@ -170,9 +212,12 @@ export default function Shell(props: Props) {
               <span>{props.revHeaderLabel}</span>
               <span style={{ color: C.accent }}>{props.revPctLabel}</span>
             </div>
-            <div style={css(`font-family:${MONO};font-size:34px;font-weight:500;letter-spacing:-0.02em;color:${C.ink};line-height:1`)}>
-              {props.revTotal}
-            </div>
+            <RevenueFigure
+              display={props.revTotal}
+              raw={props.revRaw}
+              editable={props.revEditable}
+              onChange={props.setRevMade}
+            />
             <div style={css('margin-top:9px')}>
               <Pips filled={props.revFilled} height={3} />
             </div>
