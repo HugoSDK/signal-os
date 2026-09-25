@@ -1,5 +1,5 @@
 import React from 'react'
-import { C, Check, DelBtn, MONO, Panel, Pips, PlusGlyph, css } from './ui'
+import { AutoText, C, Check, DelBtn, MONO, Panel, Pips, PlusGlyph, Slot, css, firstLine } from './ui'
 import type { Row } from './ui'
 
 type Change = (e: React.ChangeEvent<HTMLInputElement>) => void
@@ -12,7 +12,7 @@ interface Props {
   msCountLabel: string
   nextMilestoneIdx: string
   newMilestone: string
-  setNewMilestone: Change
+  setNewMilestone: AreaChange
   onMilestoneKey: (e: React.KeyboardEvent) => void
 
   currency: string
@@ -74,23 +74,31 @@ export default function Month(p: Props) {
           </Panel>
 
           <Panel num="02" label="MILESTONES" meta={p.msCountLabel}>
-            {p.milestoneRows.map((row) => (
-              <div
-                key={row.key}
-                className="row"
-                style={css(`display:flex;align-items:center;gap:13px;padding:8px 0;border-bottom:1px solid ${C.borderHair}`)}
-              >
-                <span style={rowIdx}>{row.idx}</span>
-                <Check done={row.done} onClick={row.toggle} size={13} label={row.done ? 'Mark not done' : 'Mark done'} />
-                <input type="text" value={row.text} onChange={row.onChange} placeholder="…" style={row.inputStyle} />
-                <DelBtn onClick={row.del} label="Delete milestone" show />
-              </div>
-            ))}
-            <div style={css('display:flex;align-items:center;gap:13px;padding:10px 0')}>
-              <span style={nextIdx}>{p.nextMilestoneIdx}</span>
-              <PlusGlyph size={13} />
-              <input
-                type="text"
+            {p.milestoneRows.map((row) => {
+              const h = firstLine(Number(row.inputStyle.fontSize), 6)
+              return (
+                <div
+                  key={row.key}
+                  className="row"
+                  style={css(`display:flex;align-items:flex-start;gap:13px;padding:8px 0;border-bottom:1px solid ${C.borderHair}`)}
+                >
+                  <Slot h={h}>
+                    <span style={rowIdx}>{row.idx}</span>
+                    <Check done={row.done} onClick={row.toggle} size={13} label={row.done ? 'Mark not done' : 'Mark done'} />
+                  </Slot>
+                  <AutoText value={row.text} onChange={row.onChange} placeholder="…" style={row.inputStyle} />
+                  <Slot h={h}>
+                    <DelBtn onClick={row.del} label="Delete milestone" show />
+                  </Slot>
+                </div>
+              )
+            })}
+            <div style={css('display:flex;align-items:flex-start;gap:13px;padding:10px 0')}>
+              <Slot h={firstLine(17, 4)}>
+                <span style={nextIdx}>{p.nextMilestoneIdx}</span>
+                <PlusGlyph size={13} />
+              </Slot>
+              <AutoText
                 value={p.newMilestone}
                 onChange={p.setNewMilestone}
                 onKeyDown={p.onMilestoneKey}

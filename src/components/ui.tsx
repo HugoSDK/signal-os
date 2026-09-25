@@ -156,6 +156,99 @@ export function DelBtn({ onClick, label, show }: { onClick: () => void; label: s
   )
 }
 
+/** Line height of wrapping list text (AutoText). */
+export const LIST_LINE = 1.35
+
+/** Height of a wrapping row's first line, so the index, check and buttons can
+ * sit centred on it however many lines the text runs to. */
+export const firstLine = (fontSize: number, padY: number) => Math.round(fontSize * LIST_LINE) + padY * 2
+
+/** Holds a row's fixed-size pieces (index, check, buttons) centred on the
+ * first line of text, so they stay put when the text wraps. */
+export function Slot({ h, children }: { h: number; children: React.ReactNode }) {
+  return <div style={css(`flex:none;display:flex;align-items:center;gap:13px;height:${h}px`)}>{children}</div>
+}
+
+/** A one-line text field that wraps instead of scrolling sideways, growing
+ * taller to fit. Enter never inserts a newline: it goes to `onKeyDown` (the
+ * add rows commit on it) or, without one, just leaves the field. Pasted line
+ * breaks become spaces, so saved text stays a single line. */
+export function AutoText({
+  value,
+  onChange,
+  onKeyDown,
+  placeholder,
+  className,
+  style,
+}: {
+  value: string
+  onChange: (e: React.ChangeEvent<HTMLTextAreaElement>) => void
+  onKeyDown?: (e: React.KeyboardEvent<HTMLTextAreaElement>) => void
+  placeholder?: string
+  className?: string
+  style?: React.CSSProperties
+}) {
+  const ref = React.useRef<HTMLTextAreaElement>(null)
+  const fit = React.useCallback(() => {
+    const el = ref.current
+    if (!el) return
+    el.style.height = 'auto'
+    el.style.height = el.scrollHeight + 'px'
+  }, [])
+  React.useLayoutEffect(fit, [value, fit])
+  React.useEffect(() => {
+    const el = ref.current
+    if (!el || typeof ResizeObserver === 'undefined') return
+    // Re-wrap when the column width changes (window resize, rotation).
+    let width = el.clientWidth
+    const ro = new ResizeObserver(() => {
+      if (el.clientWidth === width) return
+      width = el.clientWidth
+      fit()
+    })
+    ro.observe(el)
+    // The web font is wider than the fallback, so wrapping changes once it lands.
+    const fonts = typeof document !== 'undefined' ? document.fonts : undefined
+    fonts?.ready.then(fit)
+    fonts?.addEventListener('loadingdone', fit)
+    return () => {
+      ro.disconnect()
+      fonts?.removeEventListener('loadingdone', fit)
+    }
+  }, [fit])
+  return (
+    <textarea
+      ref={ref}
+      rows={1}
+      value={value}
+      placeholder={placeholder}
+      className={className}
+      onChange={(e) => {
+        if (/[\r\n]/.test(e.target.value)) e.target.value = e.target.value.replace(/\s*[\r\n]+\s*/g, ' ')
+        onChange(e)
+      }}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
+          e.preventDefault()
+          if (onKeyDown) onKeyDown(e)
+          else e.currentTarget.blur()
+          return
+        }
+        onKeyDown?.(e)
+      }}
+      style={{
+        display: 'block',
+        resize: 'none',
+        overflow: 'hidden',
+        lineHeight: LIST_LINE,
+        fontFamily: 'inherit',
+        overflowWrap: 'anywhere',
+        ...style,
+      }}
+    />
+  )
+}
+
 /** Stands in the checkbox column of an "add a row" line. */
 export function PlusGlyph({ size = 13 }: { size?: number }) {
   return (
@@ -216,7 +309,7 @@ export interface Row {
   category?: 'work' | 'misc'
   inputStyle: React.CSSProperties
   toggle: () => void
-  onChange: (e: React.ChangeEvent<HTMLInputElement>) => void
+  onChange: (e: React.ChangeEvent<HTMLTextAreaElement>) => void
   del: () => void
   /** Present on task rows: moves the task to the other list. */
   move?: () => void

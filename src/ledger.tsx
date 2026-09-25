@@ -72,6 +72,8 @@ export interface State {
   revMadeByMonth: Record<string, string>
   /** Date key of the day the mantra band was last acknowledged. */
   quoteSeen: string
+  /** Date key of the day the start-of-day intention prompt was last closed. */
+  intentionPromptSeen: string
   /** Month tag whose archive detail is open, if any. */
   openPeriod: string | null
   dayTag: string
@@ -125,6 +127,7 @@ export const DEFAULT_STATE: State = {
   revGoal: '5000',
   revMadeByMonth: {},
   quoteSeen: '',
+  intentionPromptSeen: '',
   openPeriod: null,
   dayTag: '',
   weekTag: '',
@@ -192,6 +195,7 @@ export default class Ledger extends React.Component<LedgerProps, State> {
     const refresh = this.props.onVisible
     if (!refresh) {
       this.detectRollover()
+      this.maybePromptIntention()
       return
     }
     // A refresh that finds a newer board remounts Ledger, and the new instance
@@ -199,19 +203,22 @@ export default class Ledger extends React.Component<LedgerProps, State> {
     refresh()
       .catch(() => {})
       .then(() => {
-        if (this.mounted) this.detectRollover()
+        if (!this.mounted) return
+        this.detectRollover()
+        this.maybePromptIntention()
       })
   }
 
   onKey = (e: KeyboardEvent) => {
     if (e.key !== 'Escape') return
     if (this.state.reflectionOpen) this.setState({ reflectionOpen: false })
-    if (this.state.intentionOpen) this.setState({ intentionOpen: false })
+    if (this.state.intentionOpen) this.closeIntention()
   }
 
   componentDidMount() {
     this.mounted = true
     this.detectRollover()
+    this.maybePromptIntention()
     this.loadArchive()
     if (typeof document !== 'undefined') {
       document.addEventListener('visibilitychange', this.onVisible)
@@ -482,10 +489,45 @@ export default class Ledger extends React.Component<LedgerProps, State> {
   }
 
   setToday(patch: Partial<DayRec>) {
-    const key = dateKey(new Date())
+    this.setDay(dateKey(new Date()), patch)
+  }
+
+  setDay(key: string, patch: Partial<DayRec>) {
     this.setState((s) => ({
       days: { ...s.days, [key]: Object.assign({}, EMPTY_DAY, s.days[key] || {}, patch) },
     }))
+  }
+
+  /* ---------- start-of-day intention ---------- */
+
+  /** Open the Start of Day prompt on the first visit of each day. It's marked
+   * seen on close, not open, so a remount mid-prompt brings it back. */
+  maybePromptIntention() {
+    if (this.state.intentionPromptSeen !== dateKey(new Date()) && !this.state.intentionOpen) {
+      this.setState({ intentionOpen: true })
+    }
+  }
+
+  closeIntention = () => {
+    this.setState({ intentionOpen: false, intentionPromptSeen: dateKey(new Date()) })
+  }
+
+  /** The most recent earlier day (within a week) that had an intention set. */
+  lastIntention(): { key: string; label: string; rec: DayRec } | null {
+    const d = new Date()
+    for (let i = 1; i <= 7; i++) {
+      d.setDate(d.getDate() - 1)
+      const key = dateKey(d)
+      const rec = this.state.days[key]
+      if (rec && (rec.intention || '').trim()) {
+        const label =
+          i === 1
+            ? 'YESTERDAY'
+            : d.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' }).replace(',', '').toUpperCase()
+        return { key, label, rec: Object.assign({}, EMPTY_DAY, rec) }
+      }
+    }
+    return null
   }
 
   /** Consecutive days back from today (or yesterday, if today isn't done yet). */
@@ -584,7 +626,7 @@ export default class Ledger extends React.Component<LedgerProps, State> {
         this.setState((s) => ({
           [key]: (s[key] as Item[]).map((x) => (x.id === it.id ? { ...x, done: !x.done } : x)),
         }) as any),
-      onChange: (e: React.ChangeEvent<HTMLInputElement>) => {
+      onChange: (e: React.ChangeEvent<HTMLTextAreaElement>) => {
         const v = e.target.value
         this.setState((s) => ({
           [key]: (s[key] as Item[]).map((x) => (x.id === it.id ? { ...x, text: v } : x)),
@@ -692,6 +734,7 @@ export default class Ledger extends React.Component<LedgerProps, State> {
 
     /* --- intention --- */
     const dayIntent = (t.intention || '').trim()
+    const prevIntent = s.intentionOpen ? this.lastIntention() : null
     const intentStreak = this.streak('topDone')
     const nudgeText = dayIntent && !t.topDone && intentStreak > 0 ? 'STREAK ' + pad(intentStreak) + 'D · NOT YET TODAY' : ''
     const touchLabel = !dayIntent
@@ -914,9 +957,21 @@ export default class Ledger extends React.Component<LedgerProps, State> {
           )}
         </Shell>
 
-        {s.intentionOpen && (
+        {s.intentionOpen && !s.pendingRollover && (
           <IntentionModal
             dayOfYearLabel={dayOfYearLabel}
+            review={
+              prevIntent
+                ? {
+                    label: prevIntent.label,
+                    text: prevIntent.rec.intention.trim(),
+                    done: !!prevIntent.rec.topDone,
+                    markDone: () => this.setDay(prevIntent.key, { topDone: true }),
+                    carry: () => this.setToday({ intention: prevIntent.rec.intention.trim() }),
+                    carried: dayIntent === prevIntent.rec.intention.trim(),
+                  }
+                : null
+            }
             intentionText={t.intention || ''}
             setIntention={(e) => this.setToday({ intention: e.target.value })}
             options={openTasks.map((x) => ({
@@ -926,7 +981,7 @@ export default class Ledger extends React.Component<LedgerProps, State> {
               tag: x.category === 'work' ? 'WORK' : 'MISC',
               pick: () => this.setToday({ intention: x.text }),
             }))}
-            onClose={() => this.setState({ intentionOpen: false })}
+            onClose={this.closeIntention}
           />
         )}
 
