@@ -98,6 +98,9 @@ export interface LedgerProps {
   onArchive?: (row: { period_type: 'week' | 'month'; period_tag: string; snapshot: Record<string, unknown> }) => Promise<boolean>
   /** Lazily load archived periods. Fetched once on mount for the Archive tab. */
   onLoadHistory?: () => Promise<ArchivedPeriod[]>
+  /** Pull other devices' saves when the page is shown again. The day rollover
+   * waits for it, so a stale board never gets pushed over a newer one. */
+  onVisible?: () => Promise<void>
   userId?: string
   email?: string
   onSignOut?: () => void
@@ -182,8 +185,22 @@ export default class Ledger extends React.Component<LedgerProps, State> {
 
   dismissed = new Set<string>()
 
+  mounted = false
+
   onVisible = () => {
-    if (typeof document !== 'undefined' && document.visibilityState === 'visible') this.detectRollover()
+    if (typeof document === 'undefined' || document.visibilityState !== 'visible') return
+    const refresh = this.props.onVisible
+    if (!refresh) {
+      this.detectRollover()
+      return
+    }
+    // A refresh that finds a newer board remounts Ledger, and the new instance
+    // runs its own rollover on mount.
+    refresh()
+      .catch(() => {})
+      .then(() => {
+        if (this.mounted) this.detectRollover()
+      })
   }
 
   onKey = (e: KeyboardEvent) => {
@@ -193,6 +210,7 @@ export default class Ledger extends React.Component<LedgerProps, State> {
   }
 
   componentDidMount() {
+    this.mounted = true
     this.detectRollover()
     this.loadArchive()
     if (typeof document !== 'undefined') {
@@ -213,6 +231,7 @@ export default class Ledger extends React.Component<LedgerProps, State> {
   }
 
   componentWillUnmount() {
+    this.mounted = false
     if (typeof document !== 'undefined') {
       document.removeEventListener('visibilitychange', this.onVisible)
       document.removeEventListener('keydown', this.onKey)

@@ -4,7 +4,7 @@ import { supabase } from './lib/supabase'
 import Ledger, { type State } from './ledger'
 import Auth from './components/Auth'
 import { C, MONO, css } from './components/ui'
-import { loadInitialState, makePersister, archivePeriod, loadHistory } from './lib/sync'
+import { createSync, archivePeriod, loadHistory } from './lib/sync'
 
 function Splash({ label }: { label: string }) {
   return (
@@ -21,7 +21,8 @@ function Splash({ label }: { label: string }) {
 
 export default function App() {
   const [session, setSession] = useState<Session | null | undefined>(undefined)
-  const [initial, setInitial] = useState<{ state: Partial<State> | null } | null>(null)
+  // `rev` bumps when another device's save replaces the board, remounting Ledger with it.
+  const [initial, setInitial] = useState<{ state: Partial<State> | null; rev: number } | null>(null)
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => setSession(data.session))
@@ -30,22 +31,48 @@ export default function App() {
   }, [])
 
   const userId = session?.user?.id
+  const sync = useMemo(
+    () =>
+      userId
+        ? createSync(userId, (state) => setInitial((prev) => ({ state, rev: (prev?.rev ?? 0) + 1 })))
+        : undefined,
+    [userId]
+  )
+
   useEffect(() => {
-    if (!userId) {
+    if (!sync) {
       setInitial(null)
       return
     }
     let cancelled = false
     setInitial(null)
-    loadInitialState(userId).then((st) => {
-      if (!cancelled) setInitial({ state: st })
+    sync.load().then((st) => {
+      if (!cancelled) setInitial({ state: st, rev: 0 })
     })
     return () => {
       cancelled = true
     }
-  }, [userId])
+  }, [sync])
 
-  const persist = useMemo(() => (userId ? makePersister(userId) : undefined), [userId])
+  // Save before the page goes away; pick up other devices' saves on return.
+  // (Ledger refreshes on visibilitychange itself, before its day rollover.)
+  useEffect(() => {
+    if (!sync) return
+    const onVisibility = () => {
+      if (document.visibilityState === 'hidden') void sync.flush()
+    }
+    const onPageHide = () => void sync.flush()
+    const onFocus = () => void sync.refresh()
+    document.addEventListener('visibilitychange', onVisibility)
+    window.addEventListener('pagehide', onPageHide)
+    window.addEventListener('focus', onFocus)
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibility)
+      window.removeEventListener('pagehide', onPageHide)
+      window.removeEventListener('focus', onFocus)
+    }
+  }, [sync])
+
   // Stable identity: Ledger refetches the archive whenever this prop changes.
   const fetchHistory = useMemo(() => (userId ? () => loadHistory(userId) : undefined), [userId])
 
@@ -55,9 +82,10 @@ export default function App() {
 
   return (
     <Ledger
-      key={userId}
+      key={userId + ':' + initial.rev}
       initialState={initial.state}
-      onPersist={persist}
+      onPersist={sync?.persist}
+      onVisible={sync?.refresh}
       userId={userId}
       email={session.user.email ?? ''}
       onSignOut={() => supabase.auth.signOut()}
