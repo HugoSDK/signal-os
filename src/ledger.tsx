@@ -10,6 +10,7 @@ import ReflectionModal from './components/ReflectionModal'
 import type { Dot, Row, WeekDot } from './components/ui'
 import type { ArchivedPeriod } from './lib/sync'
 import { buildEntries, monthCards, monthDetail, revenueByMonth } from './lib/archive'
+import { carryOver } from './lib/merge'
 import {
   dateKey,
   dayOfYear,
@@ -103,11 +104,11 @@ export interface LedgerProps {
   /** Pull other devices' saves when the page is shown again. The day rollover
    * waits for it, so a stale board never gets pushed over a newer one. */
   onVisible?: () => Promise<void>
-  /** A copy of the board this device had confirmed before a newer one lost
-   * content from it; shown in the account bar with a restore action. */
-  backup?: { label: string } | null
-  onRestore?: () => void
-  onDismissBackup?: () => void
+  /** A board saved on another device (or merged after a lost race). It is
+   * folded into the page in place — edits made here meanwhile are kept and
+   * nothing remounts, so open modals and drafts survive. `seq` makes each
+   * one distinct. */
+  remoteBoard?: { board: Partial<State>; seq: number } | null
   userId?: string
   email?: string
   onSignOut?: () => void
@@ -163,6 +164,28 @@ const TAB_ALIASES: Record<string, string> = { daily: 'today', weekly: 'week', mo
 /** Fields that exist only for this session and must not reach storage. */
 const UI_ONLY = ['intentionOpen', 'reflectionOpen', 'archive'] as const
 
+/** Persisted, but about this session rather than the board: drafts being
+ * typed, prompts being shown, the tab that is open. Another device's board
+ * never changes them here. */
+const SESSION = [
+  'activeTab',
+  'openPeriod',
+  'newWorkTask',
+  'newMiscTask',
+  'newPriority',
+  'newReview',
+  'newMilestone',
+  'pendingRollover',
+  'archiveError',
+] as const
+
+/** State minus the fields that only make sense inside this session. */
+function persistableOf(state: State): State {
+  const out: any = Object.assign({}, state)
+  UI_ONLY.forEach((k) => delete out[k])
+  return out as State
+}
+
 export default class Ledger extends React.Component<LedgerProps, State> {
   constructor(props: LedgerProps) {
     super(props)
@@ -189,7 +212,12 @@ export default class Ledger extends React.Component<LedgerProps, State> {
     if (TABS.indexOf(st.activeTab) < 0) st.activeTab = TAB_ALIASES[st.activeTab] || 'today'
     if (!Array.isArray(st.priorities) || st.priorities.length === 0) st.priorities = ['', '', '']
     this.state = st
+    this.shown = persistableOf(st)
   }
+
+  /** The board this page was last given, as persisted: the base for folding
+   * another device's board into whatever was edited here since. */
+  shown: State
 
   dismissed = new Set<string>()
 
@@ -222,6 +250,7 @@ export default class Ledger extends React.Component<LedgerProps, State> {
 
   componentDidMount() {
     this.mounted = true
+    if (this.props.remoteBoard) this.adopt(this.props.remoteBoard.board)
     this.detectRollover()
     this.maybePromptIntention()
     this.loadArchive()
@@ -233,6 +262,7 @@ export default class Ledger extends React.Component<LedgerProps, State> {
 
   componentDidUpdate(prev: LedgerProps) {
     if (prev.onLoadHistory !== this.props.onLoadHistory) this.loadArchive()
+    if (this.props.remoteBoard && this.props.remoteBoard !== prev.remoteBoard) this.adopt(this.props.remoteBoard.board)
     const persisted = this.persistable()
     try {
       window.localStorage.setItem('signal_ledger_v1', JSON.stringify(persisted))
@@ -250,11 +280,27 @@ export default class Ledger extends React.Component<LedgerProps, State> {
     }
   }
 
-  /** State minus the fields that only make sense inside this session. */
   persistable(): State {
-    const out: any = Object.assign({}, this.state)
-    UI_ONLY.forEach((k) => delete out[k])
-    return out as State
+    return persistableOf(this.state)
+  }
+
+  /** Take a board from another device into the page. Edits made here since
+   * the last board was shown are kept (three-way merge); this session's
+   * prompts, drafts, modals and open tab are left alone. */
+  adopt(board: Partial<State>) {
+    this.setState(
+      (s) => {
+        const next = carryOver(this.shown, persistableOf(s), board as State)
+        const keep: Partial<State> = {}
+        SESSION.forEach((k) => ((keep as any)[k] = s[k]))
+        UI_ONLY.forEach((k) => ((keep as any)[k] = s[k]))
+        const st: State = Object.assign({}, DEFAULT_STATE, next, keep)
+        if (!Array.isArray(st.priorities) || st.priorities.length === 0) st.priorities = ['', '', '']
+        this.shown = persistableOf(st)
+        return st
+      },
+      () => this.detectRollover()
+    )
   }
 
   /* ---------- archive ---------- */
@@ -793,9 +839,6 @@ export default class Ledger extends React.Component<LedgerProps, State> {
           navItems={navItems}
           email={this.props.email ?? ''}
           onSignOut={this.props.onSignOut}
-          backup={this.props.backup}
-          onRestore={this.props.onRestore}
-          onDismissBackup={this.props.onDismissBackup}
           dayOfYearLabel={dayOfYearLabel}
           weekLabel={'W' + pad(isoWeek(now))}
           quarterLabel={'Q' + (Math.floor(now.getMonth() / 3) + 1)}

@@ -1,6 +1,6 @@
 import { supabase } from './supabase'
 import type { State } from '../ledger'
-import { isLossy, lossOf, mergeStates, same, stable } from './merge'
+import { mergeStates, same, stable } from './merge'
 
 /* ------------------------------------------------------------------ *
  * Board sync. The whole board is one JSON row per user, so two open   *
@@ -9,7 +9,8 @@ import { isLossy, lossOf, mergeStates, same, stable } from './merge'
  * a trigger on the table refuses anything else — including writes     *
  * from builds that predate versions. A write that loses the race      *
  * pulls the newer row, three-way merges it with this device's edits   *
- * (merge.ts), and retries.                                             *
+ * (merge.ts), and retries. A board that arrives from elsewhere is     *
+ * handed to the page, which folds it in without remounting.           *
  * ------------------------------------------------------------------ */
 
 type Board = Partial<State>
@@ -23,30 +24,14 @@ interface Synced {
 /** What an earlier build may have left in localStorage: no version. */
 type StoredBase = Omit<Synced, 'version'> & { version?: number }
 
-/** A board this device had confirmed, set aside when a later one lost
- * content it had. `replacedBy` is the board that displaced it: the base for
- * putting it back over whatever has been saved since. */
-interface Backup {
-  ts: string
-  version?: number
-  /** When it was set aside. */
-  at: number
-  data: Board
-  replacedBy?: Board
-  /** The slot holds what a restore replaced, so restoring again undoes it. */
-  undo?: boolean
-  dismissed?: boolean
-}
-
 const LS_KEY = 'signal_ledger_v1'
 /** Last server-confirmed board: the common ancestor for merges after a reload. */
 const LS_BASE = 'signal_ledger_base'
 /** '1' while this device holds edits the server hasn't confirmed. */
 const LS_DIRTY = 'signal_ledger_dirty'
-/** Written by earlier builds; no longer trusted (it compared device clocks). */
+/** Written by earlier builds; no longer used. */
 const LS_LEGACY_TS = 'signal_ledger_updated_at'
-const LS_BACKUP = 'signal_ledger_backup'
-const BACKUP_TTL = 7 * 24 * 60 * 60 * 1000
+const LS_LEGACY_BACKUP = 'signal_ledger_backup'
 
 const PUSH_DELAY = 600
 const RETRY_DELAY = 5000
@@ -100,7 +85,7 @@ type Written = { ts: string; version: number }
 /** Write `data` as the version after `base` (null = no row yet). Returns the
  * new version, 'conflict' if the row has moved on, or 'error' for anything
  * else (offline, auth). `updated_at` is stamped by the server; the one sent
- * here only matters to a base row that predates the guard. */
+ * here only matters to a row that predates the guard. */
 async function write(userId: string, data: Board, base: Synced | null): Promise<Written | 'conflict' | 'error'> {
   const updated_at = new Date().toISOString()
   const q = base
@@ -129,37 +114,25 @@ async function write(userId: string, data: Board, base: Synced | null): Promise<
 export interface Sync {
   /** Initial board on sign-in (null = nothing anywhere; use defaults). */
   load(): Promise<Board | null>
-  /** Called after every Ledger change; pushes shortly after the last real
-   * edit. `rev` is the revision of the board on screen (0 for the one load()
-   * returned, then whatever the last onRemote carried); a call from a board
-   * that has since been replaced is ignored. */
-  persist(state: State, rev: number): void
+  /** Called after every Ledger change; pushes shortly after the last real edit. */
+  persist(state: State): void
   /** Push any pending edit now (page hidden / closing). Resolves to whether
    * the server has everything. */
   flush(): Promise<boolean>
   /** Pick up saves made on other devices (page shown / focused). */
   refresh(): Promise<void>
-  /** A copy this device had confirmed before a newer board lost content from
-   * it, if one is set aside. */
-  backup(): { ts: string; undo: boolean } | null
-  /** Put the set-aside copy back, merged over anything saved since, and push
-   * it as a new version. The board it replaces takes its place, so a restore
-   * can be undone. Resolves to whether the push went through. */
-  restore(): Promise<boolean>
-  dismissBackup(): void
 }
 
 /**
- * @param onRemote called when the server's board (possibly merged with local
- *   edits) should replace what's on screen, with the new revision number.
+ * @param onRemote called with a board that should replace what's on screen:
+ *   another device's save, possibly merged with edits made here. The page
+ *   folds it in without remounting, keeping anything edited meanwhile.
  */
-export function createSync(userId: string, onRemote: (state: Board, rev: number) => void): Sync {
+export function createSync(userId: string, onRemote: (state: Board) => void): Sync {
   let base: StoredBase | null = null
   let loaded = false
   /** load() has returned, so the screen can be told about newer boards. */
   let ready = false
-  /** Revision of the board on screen; see Sync.persist. */
-  let rev = 0
   /** Board most recently handed to persist(), and whether it's unpushed. */
   let latest: Board | null = null
   let pending = false
@@ -174,22 +147,13 @@ export function createSync(userId: string, onRemote: (state: Board, rev: number)
     base = next
     lsSet(LS_BASE, JSON.stringify(next))
   }
-  /** Take `next` as the confirmed board. If it lost content this device had
-   * confirmed in `prev`, that copy is set aside first. */
-  function adopt(next: Synced, prev: StoredBase | null = base) {
-    if (prev && prev.ts !== next.ts) stashIfLossy(prev, next.data)
-    setBase(next)
-  }
   function markDirty(on: boolean) {
     lsSet(LS_DIRTY, on ? '1' : null)
   }
   function show(board: Board) {
     latest = board
     lastSnap = stable(board)
-    if (ready) {
-      rev += 1
-      onRemote(board, rev)
-    }
+    if (ready) onRemote(board)
   }
   function schedule(ms: number) {
     if (timer) clearTimeout(timer)
@@ -207,7 +171,7 @@ export function createSync(userId: string, onRemote: (state: Board, rev: number)
       if (!p.ok) return false
       const remote = p.row
       const merged = mergeStates(base ? base.data : null, board, remote ? remote.data : {})
-      if (remote) adopt(remote)
+      if (remote) setBase(remote)
       console.info('sync: push conflict → merged with newer save from another device')
       res = await write(userId, merged, remote)
       // Keep anything typed while this was in flight.
@@ -249,8 +213,7 @@ export function createSync(userId: string, onRemote: (state: Board, rev: number)
     return run
   }
 
-  function persist(state: State, atRev: number) {
-    if (atRev !== rev) return
+  function persist(state: State) {
     const snap = stable(state)
     if (snap === lastSnap) return
     lastSnap = snap
@@ -274,11 +237,11 @@ export function createSync(userId: string, onRemote: (state: Board, rev: number)
       }
       if (pending && latest) {
         const merged = mergeStates(base ? base.data : null, latest, remote.data)
-        adopt(remote)
+        setBase(remote)
         show(merged)
         void flush()
       } else {
-        adopt(remote)
+        setBase(remote)
         show(remote.data)
       }
     })().finally(() => {
@@ -292,6 +255,7 @@ export function createSync(userId: string, onRemote: (state: Board, rev: number)
     const savedBase = lsJson<StoredBase>(LS_BASE)
     const dirty = lsGet(LS_DIRTY) === '1'
     lsSet(LS_LEGACY_TS, null)
+    lsSet(LS_LEGACY_BACKUP, null)
 
     const done = (board: Board | null) => {
       lastSnap = stable(board)
@@ -333,7 +297,7 @@ export function createSync(userId: string, onRemote: (state: Board, rev: number)
         savedBase && savedBase.ts === remote.ts
           ? local
           : mergeStates(savedBase ? savedBase.data : null, local, remote.data)
-      adopt(remote, savedBase)
+      setBase(remote)
       if (same(merged, remote.data)) {
         markDirty(false)
         return done(remote.data)
@@ -341,75 +305,12 @@ export function createSync(userId: string, onRemote: (state: Board, rev: number)
       return pushFirst(merged)
     }
 
-    adopt(remote, savedBase)
+    setBase(remote)
     markDirty(false)
     return done(remote.data)
   }
 
-  /* ---------- set-aside copy ---------- */
-
-  function readBackup(): Backup | null {
-    const b = lsJson<Backup>(LS_BACKUP)
-    if (!b || !b.data || typeof b.at !== 'number') return null
-    if (Date.now() - b.at > BACKUP_TTL) {
-      lsSet(LS_BACKUP, null)
-      return null
-    }
-    return b
-  }
-  function writeBackup(b: Backup) {
-    lsSet(LS_BACKUP, JSON.stringify(b))
-  }
-  function stashIfLossy(prev: StoredBase, next: Board) {
-    if (same(prev.data, next) || !isLossy(lossOf(prev.data, next))) return
-    const cur = readBackup()
-    // A copy the user hasn't dealt with yet is not overwritten.
-    if (cur && !cur.dismissed && !cur.undo && !same(cur.data, next)) return
-    writeBackup({ ts: prev.ts, version: prev.version, at: Date.now(), data: prev.data, replacedBy: next })
-    const loss = lossOf(prev.data, next)
-    console.info(
-      `sync: set aside this device's copy — the board from another device lost ${loss.entries} day/month record(s) and ${loss.leaves} value(s) it had`
-    )
-  }
-  function onScreen(): Board | null {
-    return latest ?? (base ? base.data : null)
-  }
-  function backup() {
-    const b = readBackup()
-    if (!b || b.dismissed) return null
-    const cur = onScreen()
-    if (same(b.data, cur)) return null
-    // A copy is only offered while the board on screen still lacks something
-    // it had; an undo slot is offered regardless.
-    if (!b.undo && cur && !isLossy(lossOf(b.data, cur))) return null
-    return { ts: b.ts, undo: !!b.undo }
-  }
-  function dismissBackup() {
-    const b = readBackup()
-    if (b) writeBackup({ ...b, dismissed: true })
-  }
-  async function restore(): Promise<boolean> {
-    const b = readBackup()
-    if (!loaded || !b || b.dismissed) return false
-    await flush()
-    const current = onScreen() ?? {}
-    // Put the copy back on top of whatever changed since it was set aside.
-    const merged = b.replacedBy ? mergeStates(b.replacedBy, b.data, current, 'local') : b.data
-    writeBackup({
-      ts: base ? base.ts : '',
-      version: base ? base.version : undefined,
-      at: Date.now(),
-      data: current,
-      replacedBy: merged,
-      undo: !b.undo,
-    })
-    show(merged)
-    pending = true
-    markDirty(true)
-    return flush()
-  }
-
-  return { load, persist, flush, refresh, backup, restore, dismissBackup }
+  return { load, persist, flush, refresh }
 }
 
 export interface ArchiveRow {

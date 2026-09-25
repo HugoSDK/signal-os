@@ -1,7 +1,6 @@
 /* ------------------------------------------------------------------ *
- * Three-way merge of ledger boards, and the loss check that decides    *
- * when a device sets its own copy aside. Pure and import-free so it   *
- * runs under plain Node for the tests (`npm test`).                    *
+ * Three-way merge of ledger boards. Pure and import-free so it runs    *
+ * under plain Node for the tests (`npm test`).                         *
  * ------------------------------------------------------------------ */
 
 export type Plain = Record<string, unknown>
@@ -114,99 +113,11 @@ export function mergeStates<T extends object>(
   return out as T
 }
 
-/* ---------- loss check ---------- */
-
-/** Session and period bookkeeping, never content. */
-const BOOKKEEPING = new Set([
-  'activeTab',
-  'newWorkTask',
-  'newMiscTask',
-  'newTask',
-  'newPriority',
-  'newReview',
-  'newMilestone',
-  'newObjective',
-  'quoteSeen',
-  'intentionPromptSeen',
-  'openPeriod',
-  'dayTag',
-  'weekTag',
-  'monthTag',
-  'pendingRollover',
-  'archiveError',
-])
-/** Cleared together by "Archive & reset" when the period rolls over. */
-const WEEK_FIELDS = ['weekTheme', 'priorities', 'reviewItems']
-const MONTH_FIELDS = ['monthFocus', 'milestones', 'monthObs', 'monthCorr']
-/** Keyed by date or month. An entry is only ever added or edited, never removed. */
-const KEYED = new Set(['days', 'revMadeByMonth'])
-
-export interface Loss {
-  /** Whole keyed entries (a day's record, a month's revenue) that vanished.
-   * Nothing in the app removes those, so this is a sure sign of a clobber. */
-  entries: number
-  /** Filled values that came back missing or empty, counted one by one. */
-  leaves: number
-}
-
-/** Enough loss to set the previous copy aside: a vanished entry. Cleared or
- * deleted values are ordinary edits (emptying a field, deleting tasks in
- * bulk) and the server guard rules out blind overwrites, so those are only
- * counted for the log line. */
-export const isLossy = (loss: Loss) => loss.entries > 0
-
 /**
- * What `remote` lacks that `prev` had. Legitimate clearing is discounted:
- * done items (the day rollover and the purge drop them) and the week or
- * month fields when `remote` has moved on to a later period (Archive & reset).
+ * A board from another device, taken into a page that may have been edited
+ * since `shown` (the board the page was last given). Edits made here since
+ * then are kept; everything else follows `incoming`.
  */
-export function lossOf(prev: object, remote: object): Loss {
-  const p = prev as Plain,
-    r = remote as Plain
-  const skip = new Set(BOOKKEEPING)
-  const later = (tag: string) =>
-    typeof r[tag] === 'string' && typeof p[tag] === 'string' && (r[tag] as string) > (p[tag] as string)
-  if (later('weekTag')) WEEK_FIELDS.forEach((k) => skip.add(k))
-  if (later('monthTag')) MONTH_FIELDS.forEach((k) => skip.add(k))
-  const loss: Loss = { entries: 0, leaves: 0 }
-  Object.keys(p).forEach((k) => {
-    if (skip.has(k)) return
-    if (KEYED.has(k)) {
-      if (!isPlain(p[k])) return
-      const pm = p[k] as Plain,
-        rm = isPlain(r[k]) ? (r[k] as Plain) : {}
-      Object.keys(pm).forEach((key) => {
-        if (isEmpty(pm[key])) return
-        if (rm[key] === undefined) loss.entries += 1
-        else loss.leaves += missing(pm[key], rm[key])
-      })
-      return
-    }
-    loss.leaves += missing(p[k], r[k])
-  })
-  return loss
-}
-
-/** Filled leaves of `p` that are missing or empty in `r`. */
-function missing(p: unknown, r: unknown): number {
-  if (isItemList(p)) {
-    const rm = new Map(isItemList(r) ? r.map((x) => [x.id, x]) : [])
-    let n = 0
-    p.forEach((x) => {
-      if (x.done === true) return
-      const y = rm.get(x.id)
-      n += y === undefined ? (isEmpty(x.text) ? 0 : 1) : missing(x, y)
-    })
-    return n
-  }
-  if (Array.isArray(p)) {
-    const rr = Array.isArray(r) ? r : []
-    return p.reduce((n: number, x, i) => n + missing(x, rr[i]), 0)
-  }
-  if (isPlain(p)) {
-    const rr = isPlain(r) ? r : {}
-    return Object.keys(p).reduce((n, k) => n + missing(p[k], rr[k]), 0)
-  }
-  if (isEmpty(p)) return 0
-  return isEmpty(r) ? 1 : 0
+export function carryOver<T extends object>(shown: T, current: T, incoming: T): T {
+  return same(current, shown) ? incoming : mergeStates(shown, current, incoming, 'local')
 }
