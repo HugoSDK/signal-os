@@ -5,6 +5,10 @@ import Ledger, { type State } from './ledger'
 import Auth from './components/Auth'
 import { C, MONO, css } from './components/ui'
 import { createSync, archivePeriod, loadHistory } from './lib/sync'
+import { retireIfStale } from './lib/build'
+
+/** How often a tab that is shown or focused checks for a newer build. */
+const BUILD_CHECK_EVERY = 60_000
 
 function Splash({ label }: { label: string }) {
   return (
@@ -19,10 +23,23 @@ function Splash({ label }: { label: string }) {
   )
 }
 
+/** Sidebar wording for the set-aside copy. */
+function backupLabel(b: { ts: string; undo: boolean }) {
+  if (b.undo) return 'UNDO RESTORE'
+  const d = new Date(b.ts)
+  if (isNaN(+d)) return 'RESTORE COPY FROM THIS DEVICE'
+  const time = d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })
+  const sameDay = d.toDateString() === new Date().toDateString()
+  const day = d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }).toUpperCase()
+  return 'RESTORE COPY FROM THIS DEVICE · ' + (sameDay ? time : day + ' ' + time)
+}
+
 export default function App() {
   const [session, setSession] = useState<Session | null | undefined>(undefined)
-  // `rev` bumps when another device's save replaces the board, remounting Ledger with it.
+  // `rev` identifies the board on screen: 0 for the one load() returned, then
+  // one more each time another device's save replaces it (Ledger remounts with it).
   const [initial, setInitial] = useState<{ state: Partial<State> | null; rev: number } | null>(null)
+  const [backup, setBackup] = useState<{ ts: string; undo: boolean } | null>(null)
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => setSession(data.session))
@@ -32,10 +49,7 @@ export default function App() {
 
   const userId = session?.user?.id
   const sync = useMemo(
-    () =>
-      userId
-        ? createSync(userId, (state) => setInitial((prev) => ({ state, rev: (prev?.rev ?? 0) + 1 })))
-        : undefined,
+    () => (userId ? createSync(userId, (state, rev) => setInitial({ state, rev })) : undefined),
     [userId]
   )
 
@@ -54,15 +68,32 @@ export default function App() {
     }
   }, [sync])
 
-  // Save before the page goes away; pick up other devices' saves on return.
-  // (Ledger refreshes on visibilitychange itself, before its day rollover.)
+  // A set-aside copy can appear whenever the board is replaced.
+  useEffect(() => {
+    setBackup(sync && initial ? sync.backup() : null)
+  }, [sync, initial])
+
+  // Save before the page goes away; on return, pick up other devices' saves
+  // and retire this tab if a newer build is being served. (Ledger refreshes
+  // on visibilitychange itself, before its day rollover.)
   useEffect(() => {
     if (!sync) return
+    let lastCheck = 0
+    const checkBuild = () => {
+      const now = Date.now()
+      if (now - lastCheck < BUILD_CHECK_EVERY) return
+      lastCheck = now
+      void retireIfStale(() => sync.flush())
+    }
     const onVisibility = () => {
       if (document.visibilityState === 'hidden') void sync.flush()
+      else checkBuild()
     }
     const onPageHide = () => void sync.flush()
-    const onFocus = () => void sync.refresh()
+    const onFocus = () => {
+      void sync.refresh()
+      checkBuild()
+    }
     document.addEventListener('visibilitychange', onVisibility)
     window.addEventListener('pagehide', onPageHide)
     window.addEventListener('focus', onFocus)
@@ -76,6 +107,17 @@ export default function App() {
   // Stable identity: Ledger refetches the archive whenever this prop changes.
   const fetchHistory = useMemo(() => (userId ? () => loadHistory(userId) : undefined), [userId])
 
+  const restore = async () => {
+    if (!sync) return
+    await sync.restore()
+    setBackup(sync.backup())
+  }
+  const dismissBackup = () => {
+    if (!sync) return
+    sync.dismissBackup()
+    setBackup(sync.backup())
+  }
+
   if (session === undefined) return <Splash label="LOADING" />
   if (!session) return <Auth />
   if (!initial) return <Splash label="LOADING YOUR LEDGER" />
@@ -84,8 +126,11 @@ export default function App() {
     <Ledger
       key={userId + ':' + initial.rev}
       initialState={initial.state}
-      onPersist={sync?.persist}
+      onPersist={(s) => sync?.persist(s, initial.rev)}
       onVisible={sync?.refresh}
+      backup={backup ? { label: backupLabel(backup) } : null}
+      onRestore={restore}
+      onDismissBackup={dismissBackup}
       userId={userId}
       email={session.user.email ?? ''}
       onSignOut={() => supabase.auth.signOut()}

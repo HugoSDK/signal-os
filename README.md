@@ -12,7 +12,8 @@ Data syncs across browsers/devices via Supabase.
 ## Features
 
 - **Cross-device sync** — sign in with a magic link; your ledger is stored in
-  Supabase and loads on any browser/device.
+  Supabase and loads on any browser/device. Saves are versioned and merged, so
+  two open devices never overwrite each other (see [Sync](#sync)).
 - **Forever streaks** — daily "One Lead / One Post" history lives server-side,
   so streaks are never lost when a browser is cleared. (The streak count itself
   is unbounded; the dot row shows the last 14 days.)
@@ -26,6 +27,7 @@ Data syncs across browsers/devices via Supabase.
 npm install
 cp .env.example .env   # then fill in your Supabase URL + publishable key
 npm run dev            # http://localhost:5173
+npm test               # merge + loss-check unit tests (node --test)
 ```
 
 The app also has safe public fallbacks for the Supabase config in
@@ -41,14 +43,49 @@ The app also has safe public fallbacks for the Supabase config in
 ## Database
 
 Supabase project **`signal-ledger`** (`tpodyjdynyexcgnlcsts`).
-Schema is in [`supabase/migrations/0001_init.sql`](supabase/migrations/0001_init.sql):
+Schema is in [`supabase/migrations/`](supabase/migrations/), applied in order
+through the Supabase MCP / SQL editor:
 
-- `ledger_state` — one row per user (`user_id`, `data jsonb`, `updated_at`); the
-  full app state, including daily history.
-- `period_archive` — snapshots of past weeks/months (`period_type`, `period_tag`,
-  `snapshot jsonb`).
+- `0001_init.sql` — `ledger_state`: one row per user (`user_id`, `data jsonb`,
+  `updated_at`); the full app state, including daily history. `period_archive`:
+  snapshots of past weeks/months (`period_type`, `period_tag`, `snapshot jsonb`).
+- `0002_ledger_state_version.sql` — adds `ledger_state.version` and the
+  `ledger_state_guard` trigger (see [Sync](#sync)).
 
 Both tables have **Row-Level Security**: every row is scoped to `auth.uid()`.
+
+## Sync
+
+The whole board is one JSON row per user, so two open devices race to
+overwrite each other. `src/lib/sync.ts` keeps them consistent:
+
+- **Versioned writes.** Every save asserts the row's next version
+  (`UPDATE … SET version = base + 1 WHERE version = base AND updated_at = …`).
+  A save that matches nothing lost the race: the engine pulls the newer board,
+  three-way merges it with this device's edits (`src/lib/merge.ts`: per day,
+  per month, by item id for lists) and retries. `updated_at` is stamped by the
+  server, so device clocks never decide anything.
+- **Server guard.** The `ledger_state_guard` trigger refuses any update that
+  doesn't assert `old.version + 1` with HTTP 409, so a client that doesn't
+  speak the protocol — a tab still running an earlier build, which used to
+  upsert its whole (stale) copy on any change — can no longer overwrite the
+  row. The guard engages the first time a versioned client saves the row, so
+  the migration can be applied before or after that client is deployed.
+  **After deploying, reload every open Ledger tab on every device once**;
+  until then an old tab's saves are rejected (its edits stay in that tab's
+  localStorage and are merged in when it reloads).
+- **Stale tabs retire themselves.** When a tab is shown or focused it checks
+  (at most once a minute) whether the site is serving a newer build than the
+  one it runs, flushes pending edits and reloads (`src/lib/build.ts`). Unsent
+  edits survive a reload: they're kept in localStorage and merged in on the
+  next open.
+- **Set-aside copy.** If a board pulled from the server is missing content
+  this device had already confirmed — a whole day's record, or two or more
+  cleared values at once — the previous copy is kept in localStorage for a
+  week and the sidebar offers **RESTORE COPY FROM THIS DEVICE · <time>**.
+  Restoring merges the copy over anything saved since and pushes it as a new
+  version; the board it replaced becomes an **UNDO RESTORE** slot, and either
+  can be dismissed.
 
 ## Deploy
 
@@ -65,18 +102,22 @@ Any static host works (`npm run build` → `dist/`). Two easy options:
 ## Structure
 
 ```
-index.html              Vite entry (loads Inter + Source Serif 4)
+index.html              Vite entry (loads Space Grotesk + JetBrains Mono)
 src/
   main.tsx              React root
-  App.tsx               auth gate + initial load + sync wiring + account bar
+  App.tsx               auth gate + initial load + sync wiring + stale-build check
   ledger.tsx            the app (faithful port; state, streaks, rollover, UI)
   index.css            global styles + :hover/:focus helper classes
   lib/
     supabase.ts        Supabase client
-    sync.ts            load/upsert/debounce/migrate + period archive
+    sync.ts            versioned load/push/merge/refresh, set-aside copy, period archive
+    merge.ts           three-way board merge + loss check (pure; unit-tested)
+    build.ts           reload a tab when a newer build is being served
   components/
     Auth.tsx           magic-link sign-in screen
+    Shell.tsx          sidebar, header, restore action
     RolloverPrompt.tsx week/month rollover modal
-supabase/migrations/   database schema
+supabase/migrations/   database schema (applied in order)
+tests/                 node --test unit tests
 reference/             original single-file export (design reference)
 ```

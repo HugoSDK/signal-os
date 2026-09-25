@@ -14,6 +14,10 @@ interface Props {
   navItems: NavItem[]
   email: string
   onSignOut?: () => void
+  /** A set-aside copy of the board, with a restore action. */
+  backup?: { label: string } | null
+  onRestore?: () => void
+  onDismissBackup?: () => void
   dayOfYearLabel: string
   weekLabel: string
   quarterLabel: string
@@ -70,6 +74,49 @@ function RevenueFigure(p: {
       size={1}
       style={{ ...figureStyle, minWidth: 0, padding: '0 0 3px' }}
     />
+  )
+}
+
+const small: React.CSSProperties = { fontSize: 10, letterSpacing: '0.14em' }
+
+/**
+ * Offers to put back a copy of the board this device had confirmed before a
+ * newer one dropped content from it. Restoring replaces the whole board (as
+ * a new version, merged over later edits), so it asks once.
+ */
+function BackupAction(p: { label: string; onRestore?: () => void; onDismiss?: () => void }) {
+  const [confirming, setConfirming] = useState(false)
+  if (confirming) {
+    return (
+      <div style={css('display:flex;flex-direction:column;gap:6px')}>
+        <span style={{ fontFamily: MONO, ...small, color: C.inkMuted }}>REPLACE THE CURRENT LEDGER?</span>
+        <span style={css('display:flex;gap:14px')}>
+          <button
+            className="txtbtn"
+            style={{ ...small, color: C.accent }}
+            onClick={() => {
+              setConfirming(false)
+              p.onRestore?.()
+            }}
+          >
+            CONFIRM
+          </button>
+          <button className="txtbtn" style={small} onClick={() => setConfirming(false)}>
+            CANCEL
+          </button>
+        </span>
+      </div>
+    )
+  }
+  return (
+    <div style={css('display:flex;flex-direction:column;gap:6px')}>
+      <button className="txtbtn" style={{ ...small, color: C.accent }} onClick={() => setConfirming(true)}>
+        {p.label}
+      </button>
+      <button className="txtbtn" style={small} onClick={p.onDismiss}>
+        DISMISS
+      </button>
+    </div>
   )
 }
 
@@ -139,7 +186,10 @@ export default function Shell(props: Props) {
           >
             {email}
           </span>
-          <button onClick={onSignOut} className="txtbtn" style={{ fontSize: 10, letterSpacing: '0.14em' }}>
+          {props.backup && (
+            <BackupAction label={props.backup.label} onRestore={props.onRestore} onDismiss={props.onDismissBackup} />
+          )}
+          <button onClick={onSignOut} className="txtbtn" style={small}>
             SIGN OUT
           </button>
         </div>

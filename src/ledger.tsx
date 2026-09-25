@@ -103,6 +103,11 @@ export interface LedgerProps {
   /** Pull other devices' saves when the page is shown again. The day rollover
    * waits for it, so a stale board never gets pushed over a newer one. */
   onVisible?: () => Promise<void>
+  /** A copy of the board this device had confirmed before a newer one lost
+   * content from it; shown in the account bar with a restore action. */
+  backup?: { label: string } | null
+  onRestore?: () => void
+  onDismissBackup?: () => void
   userId?: string
   email?: string
   onSignOut?: () => void
@@ -788,6 +793,9 @@ export default class Ledger extends React.Component<LedgerProps, State> {
           navItems={navItems}
           email={this.props.email ?? ''}
           onSignOut={this.props.onSignOut}
+          backup={this.props.backup}
+          onRestore={this.props.onRestore}
+          onDismissBackup={this.props.onDismissBackup}
           dayOfYearLabel={dayOfYearLabel}
           weekLabel={'W' + pad(isoWeek(now))}
           quarterLabel={'Q' + (Math.floor(now.getMonth() / 3) + 1)}
