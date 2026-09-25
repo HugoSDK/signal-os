@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { isEmpty, isLossy, lossOf, mergeStates, same, stable } from '../src/lib/merge.ts'
+import { carryOver, isEmpty, mergeStates, same, stable } from '../src/lib/merge.ts'
 
 const day = (over: Record<string, unknown> = {}) => ({
   intention: '',
@@ -94,67 +94,25 @@ test('typing that happened during a push survives the conflict merge (retry path
   assert.deepEqual(mergeStates(board, latest, merged, 'local'), { weekTheme: 'b', tasks: [task(1, 'x'), task(2, 'ty')] })
 })
 
-test('lossOf: additions and legitimate clearing are not losses', () => {
-  const prev = { tasks: [task(1, 'a'), task(2, 'b', { done: true })], days: { d1: day({ intention: 'x' }) }, weekTheme: 'w', weekTag: '2026-W39' }
-  const more = { ...prev, tasks: [...prev.tasks, task(3, 'c')], days: { ...prev.days, d2: day({ intention: 'y' }) } }
-  assert.deepEqual(lossOf(prev, more), { entries: 0, leaves: 0 })
-  // day rollover / purge: done tasks dropped
-  assert.deepEqual(lossOf(prev, { ...prev, tasks: [task(1, 'a')] }), { entries: 0, leaves: 0 })
-  // Archive & reset moved the week on
-  const week = { weekTheme: 'w', priorities: ['a', 'b', ''], reviewItems: [task(1, 'r')], weekTag: '2026-W39' }
-  const reset = { weekTheme: '', priorities: ['', '', ''], reviewItems: [], weekTag: '2026-W40' }
-  assert.deepEqual(lossOf(week, reset), { entries: 0, leaves: 0 })
-  // tasks deleted elsewhere are leaves, never enough to prompt — even in bulk
-  const one = lossOf({ tasks: [task(1, 'a'), task(2, 'b')] }, { tasks: [task(1, 'a')] })
-  assert.deepEqual(one, { entries: 0, leaves: 1 })
-  assert.ok(!isLossy(one))
-  const five = lossOf({ tasks: [1, 2, 3, 4, 5, 6].map((i) => task(i, 't' + i)) }, { tasks: [task(6, 't6')] })
-  assert.deepEqual(five, { entries: 0, leaves: 5 })
-  assert.ok(!isLossy(five))
-  // cleared values alone don't prompt either
-  const cleared = lossOf({ weekTheme: 'w', monthFocus: 'm', days: { d: day({ intention: 'x', topDone: true }) } }, { weekTheme: '', monthFocus: '', days: { d: day({ intention: 'x' }) } })
-  assert.deepEqual(cleared, { entries: 0, leaves: 3 })
-  assert.ok(!isLossy(cleared))
+test('carryOver: with nothing edited here, the incoming board is taken as is', () => {
+  const shown = { weekTheme: 'a', tasks: [task(1, 'x')], days: { d: day({ intention: 'i' }) } }
+  const incoming = { weekTheme: 'b', tasks: [task(1, 'x'), task(2, 'y')], days: { d: day({ intention: 'j' }) } }
+  assert.deepEqual(carryOver(shown, { ...shown }, incoming), incoming)
 })
 
-test('lossOf: after a restore that carried deletions, the restored board is not a loss', () => {
-  const clobbered = { tasks: [1, 2, 3, 4, 5, 6, 7].map((i) => task(i, 't' + i)), days: { '2026-09-23': day({ intention: 'i' }) } }
-  const restored = {
-    tasks: [task(6, 't6'), task(7, 't7'), task(8, 'new')],
-    days: { '2026-09-23': day({ intention: 'i' }), '2026-09-25': day({ intention: 'today' }) },
-  }
-  const loss = lossOf(clobbered, restored)
-  assert.deepEqual(loss, { entries: 0, leaves: 5 })
-  assert.ok(!isLossy(loss))
-  assert.ok(isLossy(lossOf(restored, clobbered)))
+test('carryOver: an edit made here while the board was arriving survives it', () => {
+  const shown = { weekTheme: 'a', tasks: [task(1, 'x')], days: { d: day({ intention: 'i' }) } }
+  // marked a day and added a task here…
+  const current = { weekTheme: 'a', tasks: [task(1, 'x'), task(3, 'mine')], days: { d: day({ intention: 'i', topDone: true }) } }
+  // …while another device changed the theme and added a task
+  const incoming = { weekTheme: 'b', tasks: [task(1, 'x'), task(2, 'theirs')], days: { d: day({ intention: 'i' }) } }
+  const out = carryOver(shown, current, incoming)
+  assert.equal(out.weekTheme, 'b')
+  assert.deepEqual(ids(out.tasks), [1, 3, 2])
+  assert.equal(out.days.d.topDone, true)
 })
 
-test('lossOf: a vanished day record or month revenue is a lost entry', () => {
-  assert.deepEqual(lossOf({ days: { d1: day({ intention: 'x' }) } }, { days: {} }), { entries: 1, leaves: 0 })
-  assert.deepEqual(lossOf({ revMadeByMonth: { '2026-09': '1200' } }, { revMadeByMonth: {} }), { entries: 1, leaves: 0 })
-  // an empty record that vanishes is nothing
-  assert.deepEqual(lossOf({ days: { d1: day() } }, { days: {} }), { entries: 0, leaves: 0 })
-})
-
-test('lossOf: the stale-tab clobber shape is lossy', () => {
-  const good = {
-    tasks: [task(1, 'a'), task(2, 'b'), task(4, 'new'), task(5, 'newer')],
-    days: { '2026-09-23': day({ intention: 'i', topDone: true }), '2026-09-25': day({ intention: 'today' }) },
-    intentionPromptSeen: '2026-09-25',
-    dayTag: '2026-09-25',
-  }
-  const stale = {
-    tasks: [task(1, 'a'), task(2, 'b')],
-    days: { '2026-09-23': day({ intention: 'i' }) },
-    intentionPromptSeen: '2026-09-25',
-    dayTag: '2026-09-25',
-  }
-  const loss = lossOf(good, stale)
-  assert.deepEqual(loss, { entries: 1, leaves: 3 })
-  assert.ok(isLossy(loss))
-  assert.ok(!isLossy(lossOf(stale, good)))
-  // the vanished day record is what makes it lossy, not the missing tasks
-  const noDay = { ...good, days: { '2026-09-23': good.days['2026-09-23'] } }
-  assert.deepEqual(lossOf(noDay, stale), { entries: 0, leaves: 3 })
-  assert.ok(!isLossy(lossOf(noDay, stale)))
+test('carryOver: a value both sides changed keeps the edit made here', () => {
+  const shown = { weekTheme: 'a' }
+  assert.equal(carryOver(shown, { weekTheme: 'mine' }, { weekTheme: 'theirs' }).weekTheme, 'mine')
 })

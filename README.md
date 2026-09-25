@@ -74,17 +74,16 @@ overwrite each other. `src/lib/sync.ts` keeps them consistent:
   **After deploying, reload every open Ledger tab on every device once**;
   until then an old tab's saves are rejected (its edits stay in that tab's
   localStorage and are merged in when it reloads).
+- **Another device's save is folded into the open page.** When a tab is shown
+  or focused it pulls the row; a newer board is merged into the page in place
+  (edits made here meanwhile are kept), so nothing remounts and open modals or
+  drafts survive. The tab that is open and the drafts being typed never
+  follow another device.
 - **Stale tabs retire themselves.** When a tab is shown or focused it checks
   (at most once a minute) whether the site is serving a newer build than the
   one it runs, flushes pending edits and reloads (`src/lib/build.ts`). Unsent
   edits survive a reload: they're kept in localStorage and merged in on the
   next open.
-- **Set-aside copy.** If a board pulled from the server has lost a whole
-  day's record or a month's revenue that this device had already confirmed
-  (nothing in the app removes those, so it is a sure sign something overwrote
-  the row), the previous copy is kept in localStorage for a week and the
-  sidebar offers **RESTORE COPY FROM THIS DEVICE · <time>** for as long as the
-  board on screen still lacks what the copy had.
   Restoring merges the copy over anything saved since and pushes it as a new
   version; the board it replaced becomes an **UNDO RESTORE** slot, and either
   can be dismissed.
@@ -112,12 +111,12 @@ src/
   index.css            global styles + :hover/:focus helper classes
   lib/
     supabase.ts        Supabase client
-    sync.ts            versioned load/push/merge/refresh, set-aside copy, period archive
-    merge.ts           three-way board merge + loss check (pure; unit-tested)
+    sync.ts            versioned load/push/merge/refresh + period archive
+    merge.ts           three-way board merge (pure; unit-tested)
     build.ts           reload a tab when a newer build is being served
   components/
     Auth.tsx           magic-link sign-in screen
-    Shell.tsx          sidebar, header, restore action
+    Shell.tsx          sidebar and header
     RolloverPrompt.tsx week/month rollover modal
 supabase/migrations/   database schema (applied in order)
 tests/                 node --test unit tests

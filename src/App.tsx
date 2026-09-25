@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { Session } from '@supabase/supabase-js'
 import { supabase } from './lib/supabase'
 import Ledger, { type State } from './ledger'
@@ -23,23 +23,13 @@ function Splash({ label }: { label: string }) {
   )
 }
 
-/** Sidebar wording for the set-aside copy. */
-function backupLabel(b: { ts: string; undo: boolean }) {
-  if (b.undo) return 'UNDO RESTORE'
-  const d = new Date(b.ts)
-  if (isNaN(+d)) return 'RESTORE COPY FROM THIS DEVICE'
-  const time = d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })
-  const sameDay = d.toDateString() === new Date().toDateString()
-  const day = d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }).toUpperCase()
-  return 'RESTORE COPY FROM THIS DEVICE · ' + (sameDay ? time : day + ' ' + time)
-}
-
 export default function App() {
   const [session, setSession] = useState<Session | null | undefined>(undefined)
-  // `rev` identifies the board on screen: 0 for the one load() returned, then
-  // one more each time another device's save replaces it (Ledger remounts with it).
-  const [initial, setInitial] = useState<{ state: Partial<State> | null; rev: number } | null>(null)
-  const [backup, setBackup] = useState<{ ts: string; undo: boolean } | null>(null)
+  const [initial, setInitial] = useState<{ state: Partial<State> | null } | null>(null)
+  // A board saved on another device (or merged after a lost race). Ledger
+  // folds it into the open page in place; `seq` makes each one distinct.
+  const [remoteBoard, setRemoteBoard] = useState<{ board: Partial<State>; seq: number } | null>(null)
+  const seq = useRef(0)
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => setSession(data.session))
@@ -49,7 +39,7 @@ export default function App() {
 
   const userId = session?.user?.id
   const sync = useMemo(
-    () => (userId ? createSync(userId, (state, rev) => setInitial({ state, rev })) : undefined),
+    () => (userId ? createSync(userId, (board) => setRemoteBoard({ board, seq: ++seq.current })) : undefined),
     [userId]
   )
 
@@ -60,18 +50,14 @@ export default function App() {
     }
     let cancelled = false
     setInitial(null)
+    setRemoteBoard(null)
     sync.load().then((st) => {
-      if (!cancelled) setInitial({ state: st, rev: 0 })
+      if (!cancelled) setInitial({ state: st })
     })
     return () => {
       cancelled = true
     }
   }, [sync])
-
-  // A set-aside copy can appear whenever the board is replaced.
-  useEffect(() => {
-    setBackup(sync && initial ? sync.backup() : null)
-  }, [sync, initial])
 
   // Save before the page goes away; on return, pick up other devices' saves
   // and retire this tab if a newer build is being served. (Ledger refreshes
@@ -107,30 +93,17 @@ export default function App() {
   // Stable identity: Ledger refetches the archive whenever this prop changes.
   const fetchHistory = useMemo(() => (userId ? () => loadHistory(userId) : undefined), [userId])
 
-  const restore = async () => {
-    if (!sync) return
-    await sync.restore()
-    setBackup(sync.backup())
-  }
-  const dismissBackup = () => {
-    if (!sync) return
-    sync.dismissBackup()
-    setBackup(sync.backup())
-  }
-
   if (session === undefined) return <Splash label="LOADING" />
   if (!session) return <Auth />
   if (!initial) return <Splash label="LOADING YOUR LEDGER" />
 
   return (
     <Ledger
-      key={userId + ':' + initial.rev}
+      key={userId}
       initialState={initial.state}
-      onPersist={(s) => sync?.persist(s, initial.rev)}
+      remoteBoard={remoteBoard}
+      onPersist={sync?.persist}
       onVisible={sync?.refresh}
-      backup={backup ? { label: backupLabel(backup) } : null}
-      onRestore={restore}
-      onDismissBackup={dismissBackup}
       userId={userId}
       email={session.user.email ?? ''}
       onSignOut={() => supabase.auth.signOut()}
