@@ -149,9 +149,11 @@ export interface Loss {
   leaves: number
 }
 
-/** Enough loss to keep the previous copy: any vanished entry, or more than
- * one cleared value (deleting a single task elsewhere shouldn't prompt). */
-export const isLossy = (loss: Loss) => loss.entries > 0 || loss.leaves >= 2
+/** Enough loss to set the previous copy aside: a vanished entry. Cleared or
+ * deleted values are ordinary edits (emptying a field, deleting tasks in
+ * bulk) and the server guard rules out blind overwrites, so those are only
+ * counted for the log line. */
+export const isLossy = (loss: Loss) => loss.entries > 0
 
 /**
  * What `remote` lacks that `prev` had. Legitimate clearing is discounted:

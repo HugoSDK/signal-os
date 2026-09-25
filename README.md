@@ -79,10 +79,12 @@ overwrite each other. `src/lib/sync.ts` keeps them consistent:
   one it runs, flushes pending edits and reloads (`src/lib/build.ts`). Unsent
   edits survive a reload: they're kept in localStorage and merged in on the
   next open.
-- **Set-aside copy.** If a board pulled from the server is missing content
-  this device had already confirmed — a whole day's record, or two or more
-  cleared values at once — the previous copy is kept in localStorage for a
-  week and the sidebar offers **RESTORE COPY FROM THIS DEVICE · <time>**.
+- **Set-aside copy.** If a board pulled from the server has lost a whole
+  day's record or a month's revenue that this device had already confirmed
+  (nothing in the app removes those, so it is a sure sign something overwrote
+  the row), the previous copy is kept in localStorage for a week and the
+  sidebar offers **RESTORE COPY FROM THIS DEVICE · <time>** for as long as the
+  board on screen still lacks what the copy had.
   Restoring merges the copy over anything saved since and pushes it as a new
   version; the board it replaced becomes an **UNDO RESTORE** slot, and either
   can be dismissed.

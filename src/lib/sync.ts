@@ -366,14 +366,22 @@ export function createSync(userId: string, onRemote: (state: Board, rev: number)
     // A copy the user hasn't dealt with yet is not overwritten.
     if (cur && !cur.dismissed && !cur.undo && !same(cur.data, next)) return
     writeBackup({ ts: prev.ts, version: prev.version, at: Date.now(), data: prev.data, replacedBy: next })
-    console.info("sync: set aside this device's copy — the board from another device is missing content it had")
+    const loss = lossOf(prev.data, next)
+    console.info(
+      `sync: set aside this device's copy — the board from another device lost ${loss.entries} day/month record(s) and ${loss.leaves} value(s) it had`
+    )
   }
   function onScreen(): Board | null {
     return latest ?? (base ? base.data : null)
   }
   function backup() {
     const b = readBackup()
-    if (!b || b.dismissed || same(b.data, onScreen())) return null
+    if (!b || b.dismissed) return null
+    const cur = onScreen()
+    if (same(b.data, cur)) return null
+    // A copy is only offered while the board on screen still lacks something
+    // it had; an undo slot is offered regardless.
+    if (!b.undo && cur && !isLossy(lossOf(b.data, cur))) return null
     return { ts: b.ts, undo: !!b.undo }
   }
   function dismissBackup() {

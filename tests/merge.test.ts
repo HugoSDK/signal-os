@@ -104,10 +104,29 @@ test('lossOf: additions and legitimate clearing are not losses', () => {
   const week = { weekTheme: 'w', priorities: ['a', 'b', ''], reviewItems: [task(1, 'r')], weekTag: '2026-W39' }
   const reset = { weekTheme: '', priorities: ['', '', ''], reviewItems: [], weekTag: '2026-W40' }
   assert.deepEqual(lossOf(week, reset), { entries: 0, leaves: 0 })
-  // a single task deleted elsewhere is a leaf, not enough to prompt
+  // tasks deleted elsewhere are leaves, never enough to prompt — even in bulk
   const one = lossOf({ tasks: [task(1, 'a'), task(2, 'b')] }, { tasks: [task(1, 'a')] })
   assert.deepEqual(one, { entries: 0, leaves: 1 })
   assert.ok(!isLossy(one))
+  const five = lossOf({ tasks: [1, 2, 3, 4, 5, 6].map((i) => task(i, 't' + i)) }, { tasks: [task(6, 't6')] })
+  assert.deepEqual(five, { entries: 0, leaves: 5 })
+  assert.ok(!isLossy(five))
+  // cleared values alone don't prompt either
+  const cleared = lossOf({ weekTheme: 'w', monthFocus: 'm', days: { d: day({ intention: 'x', topDone: true }) } }, { weekTheme: '', monthFocus: '', days: { d: day({ intention: 'x' }) } })
+  assert.deepEqual(cleared, { entries: 0, leaves: 3 })
+  assert.ok(!isLossy(cleared))
+})
+
+test('lossOf: after a restore that carried deletions, the restored board is not a loss', () => {
+  const clobbered = { tasks: [1, 2, 3, 4, 5, 6, 7].map((i) => task(i, 't' + i)), days: { '2026-09-23': day({ intention: 'i' }) } }
+  const restored = {
+    tasks: [task(6, 't6'), task(7, 't7'), task(8, 'new')],
+    days: { '2026-09-23': day({ intention: 'i' }), '2026-09-25': day({ intention: 'today' }) },
+  }
+  const loss = lossOf(clobbered, restored)
+  assert.deepEqual(loss, { entries: 0, leaves: 5 })
+  assert.ok(!isLossy(loss))
+  assert.ok(isLossy(lossOf(restored, clobbered)))
 })
 
 test('lossOf: a vanished day record or month revenue is a lost entry', () => {
@@ -134,4 +153,8 @@ test('lossOf: the stale-tab clobber shape is lossy', () => {
   assert.deepEqual(loss, { entries: 1, leaves: 3 })
   assert.ok(isLossy(loss))
   assert.ok(!isLossy(lossOf(stale, good)))
+  // the vanished day record is what makes it lossy, not the missing tasks
+  const noDay = { ...good, days: { '2026-09-23': good.days['2026-09-23'] } }
+  assert.deepEqual(lossOf(noDay, stale), { entries: 0, leaves: 3 })
+  assert.ok(!isLossy(lossOf(noDay, stale)))
 })
