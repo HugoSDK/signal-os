@@ -1,13 +1,15 @@
 import { supabase } from './supabase'
 import type { State } from '../ledger'
+import { isLossy, lossOf, mergeStates, same, stable } from './merge'
 
 /* ------------------------------------------------------------------ *
  * Board sync. The whole board is one JSON row per user, so two open   *
- * devices race to overwrite each other. Writes are therefore          *
- * conditional on the row's `updated_at` (used purely as a version —   *
- * compared for equality, never across clocks). A write that loses the *
- * race pulls the newer row, three-way merges it with this device's    *
- * edits, and retries.                                                  *
+ * devices race to overwrite each other. Every write therefore asserts *
+ * the row's next `version` (and its `updated_at`, as a second check); *
+ * a trigger on the table refuses anything else — including writes     *
+ * from builds that predate versions. A write that loses the race      *
+ * pulls the newer row, three-way merges it with this device's edits   *
+ * (merge.ts), and retries.                                             *
  * ------------------------------------------------------------------ */
 
 type Board = Partial<State>
@@ -15,7 +17,25 @@ type Board = Partial<State>
 /** A board as confirmed by the server, with the version it was saved at. */
 interface Synced {
   ts: string
+  version: number
   data: Board
+}
+/** What an earlier build may have left in localStorage: no version. */
+type StoredBase = Omit<Synced, 'version'> & { version?: number }
+
+/** A board this device had confirmed, set aside when a later one lost
+ * content it had. `replacedBy` is the board that displaced it: the base for
+ * putting it back over whatever has been saved since. */
+interface Backup {
+  ts: string
+  version?: number
+  /** When it was set aside. */
+  at: number
+  data: Board
+  replacedBy?: Board
+  /** The slot holds what a restore replaced, so restoring again undoes it. */
+  undo?: boolean
+  dismissed?: boolean
 }
 
 const LS_KEY = 'signal_ledger_v1'
@@ -25,9 +45,13 @@ const LS_BASE = 'signal_ledger_base'
 const LS_DIRTY = 'signal_ledger_dirty'
 /** Written by earlier builds; no longer trusted (it compared device clocks). */
 const LS_LEGACY_TS = 'signal_ledger_updated_at'
+const LS_BACKUP = 'signal_ledger_backup'
+const BACKUP_TTL = 7 * 24 * 60 * 60 * 1000
 
 const PUSH_DELAY = 600
 const RETRY_DELAY = 5000
+
+const MIGRATION_HINT = 'sync: ledger_state has no version column — apply supabase/migrations/0002_ledger_state_version.sql'
 
 function lsGet(k: string): string | null {
   try {
@@ -52,123 +76,52 @@ function lsJson<T>(k: string): T | null {
   }
 }
 
-/* ---------- merge ---------- */
-
-/** JSON with object keys sorted — Postgres jsonb reorders keys, so plain
- * JSON.stringify would call identical boards different. */
-function stable(v: unknown): string | undefined {
-  return JSON.stringify(v, (_k, val) =>
-    val && typeof val === 'object' && !Array.isArray(val)
-      ? Object.keys(val)
-          .sort()
-          .reduce((o: Record<string, unknown>, k) => {
-            o[k] = val[k]
-            return o
-          }, {})
-      : val
-  )
-}
-
-const same = (a: unknown, b: unknown) => stable(a) === stable(b)
-
-type Plain = Record<string, unknown>
-const isPlain = (v: unknown): v is Plain => !!v && typeof v === 'object' && !Array.isArray(v)
-const isItemList = (v: unknown): v is Plain[] =>
-  Array.isArray(v) && v.every((x) => isPlain(x) && typeof x.id === 'number')
-
-/** How far into each field a merge looks before letting this device win. */
-const MERGE_DEPTH: Record<string, number> = {
-  days: 2, // date -> field
-  revMadeByMonth: 1, // month
-  tasks: 1, // item id
-  reviewItems: 1,
-  milestones: 1,
-}
-
-/**
- * Three-way merge of one value. Whichever side left it as it was in `b`
- * takes the other side's change; when both changed it, descend `depth`
- * levels into maps (by key) and item lists (by id), and past that the
- * local side wins.
- */
-function merge3(b: unknown, l: unknown, r: unknown, depth: number): unknown {
-  if (same(l, b)) return r
-  if (same(r, b) || same(l, r)) return l
-  if (depth <= 0) return l
-  if (isItemList(l) && isItemList(r) && (b === undefined || isItemList(b))) {
-    const byId = (xs: Plain[]) => new Map(xs.map((x) => [x.id, x]))
-    const bm = byId((b ?? []) as Plain[]),
-      lm = byId(l),
-      rm = byId(r)
-    const out: unknown[] = []
-    l.forEach((x) => {
-      const v = merge3(bm.get(x.id), x, rm.get(x.id), depth)
-      if (v !== undefined) out.push(v)
-    })
-    r.forEach((x) => {
-      if (lm.has(x.id)) return
-      const v = merge3(bm.get(x.id), undefined, x, depth)
-      if (v !== undefined) out.push(v)
-    })
-    return out
-  }
-  if (isPlain(l) && isPlain(r) && (b === undefined || isPlain(b))) {
-    const bb = (b ?? {}) as Plain
-    const out: Plain = {}
-    new Set([...Object.keys(l), ...Object.keys(r)]).forEach((k) => {
-      const v = merge3(bb[k], l[k], r[k], depth - 1)
-      if (v !== undefined) out[k] = v
-    })
-    return out
-  }
-  return l
-}
-
-/** Merge this device's board (`local`) with a newer server board (`remote`),
- * given the board both started from (`base`). */
-export function mergeStates(base: Board | null, local: Board, remote: Board): Board {
-  const b = (base ?? {}) as Plain,
-    l = local as Plain,
-    r = remote as Plain
-  const out: Plain = {}
-  new Set([...Object.keys(r), ...Object.keys(l)]).forEach((k) => {
-    const v = merge3(b[k], l[k], r[k], MERGE_DEPTH[k] ?? 0)
-    if (v !== undefined) out[k] = v
-  })
-  return out as Board
-}
-
 /* ---------- server ---------- */
 
 async function pull(userId: string): Promise<{ ok: true; row: Synced | null } | { ok: false }> {
   const { data, error } = await supabase
     .from('ledger_state')
-    .select('data, updated_at')
+    .select('data, version, updated_at')
     .eq('user_id', userId)
     .maybeSingle()
   if (error) {
+    if (error.code === '42703') console.error(MIGRATION_HINT)
     console.warn('sync: pull failed', error.message)
     return { ok: false }
   }
-  return { ok: true, row: data ? { ts: data.updated_at, data: (data.data ?? {}) as Board } : null }
+  return {
+    ok: true,
+    row: data ? { ts: data.updated_at, version: Number(data.version ?? 0), data: (data.data ?? {}) as Board } : null,
+  }
 }
 
-/** Write `data` only if the row is still at version `baseTs` (null = no row yet).
- * Returns the new version, 'conflict' if another device got there first, or
- * 'error' for anything else (offline, auth). */
-async function write(userId: string, data: Board, baseTs: string | null): Promise<string | 'conflict' | 'error'> {
+type Written = { ts: string; version: number }
+
+/** Write `data` as the version after `base` (null = no row yet). Returns the
+ * new version, 'conflict' if the row has moved on, or 'error' for anything
+ * else (offline, auth). `updated_at` is stamped by the server; the one sent
+ * here only matters to a base row that predates the guard. */
+async function write(userId: string, data: Board, base: Synced | null): Promise<Written | 'conflict' | 'error'> {
   const updated_at = new Date().toISOString()
-  const q = baseTs
-    ? supabase.from('ledger_state').update({ data, updated_at }).eq('user_id', userId).eq('updated_at', baseTs)
+  const q = base
+    ? supabase
+        .from('ledger_state')
+        .update({ data, version: base.version + 1, updated_at })
+        .eq('user_id', userId)
+        .eq('version', base.version)
+        .eq('updated_at', base.ts)
     : supabase.from('ledger_state').insert({ user_id: userId, data, updated_at })
-  const { data: rows, error } = await q.select('updated_at')
+  const { data: rows, error } = await q.select('version, updated_at')
   if (error) {
-    if (error.code === '23505') return 'conflict' // insert raced another device's first save
-    console.warn('sync: write failed', error.message)
+    // 23505: the insert raced another device's first save. PT409: the
+    // table's guard refused the write because the row has moved on.
+    if (error.code === '23505' || error.code === 'PT409' || error.code === 'P0001') return 'conflict'
+    if (error.code === 'PGRST204' || error.code === '42703') console.error(MIGRATION_HINT, error.message)
+    else console.warn('sync: write failed', error.message)
     return 'error'
   }
   if (!rows || !rows.length) return 'conflict'
-  return rows[0].updated_at as string
+  return { ts: rows[0].updated_at as string, version: Number(rows[0].version ?? 0) }
 }
 
 /* ---------- engine ---------- */
@@ -176,23 +129,37 @@ async function write(userId: string, data: Board, baseTs: string | null): Promis
 export interface Sync {
   /** Initial board on sign-in (null = nothing anywhere; use defaults). */
   load(): Promise<Board | null>
-  /** Called after every Ledger change; pushes shortly after the last real edit. */
-  persist(state: State): void
-  /** Push any pending edit now (page hidden / closing). */
-  flush(): Promise<void>
+  /** Called after every Ledger change; pushes shortly after the last real
+   * edit. `rev` is the revision of the board on screen (0 for the one load()
+   * returned, then whatever the last onRemote carried); a call from a board
+   * that has since been replaced is ignored. */
+  persist(state: State, rev: number): void
+  /** Push any pending edit now (page hidden / closing). Resolves to whether
+   * the server has everything. */
+  flush(): Promise<boolean>
   /** Pick up saves made on other devices (page shown / focused). */
   refresh(): Promise<void>
+  /** A copy this device had confirmed before a newer board lost content from
+   * it, if one is set aside. */
+  backup(): { ts: string; undo: boolean } | null
+  /** Put the set-aside copy back, merged over anything saved since, and push
+   * it as a new version. The board it replaces takes its place, so a restore
+   * can be undone. Resolves to whether the push went through. */
+  restore(): Promise<boolean>
+  dismissBackup(): void
 }
 
 /**
  * @param onRemote called when the server's board (possibly merged with local
- *   edits) should replace what's on screen.
+ *   edits) should replace what's on screen, with the new revision number.
  */
-export function createSync(userId: string, onRemote: (state: Board) => void): Sync {
-  let base: Synced | null = null
+export function createSync(userId: string, onRemote: (state: Board, rev: number) => void): Sync {
+  let base: StoredBase | null = null
   let loaded = false
   /** load() has returned, so the screen can be told about newer boards. */
   let ready = false
+  /** Revision of the board on screen; see Sync.persist. */
+  let rev = 0
   /** Board most recently handed to persist(), and whether it's unpushed. */
   let latest: Board | null = null
   let pending = false
@@ -200,12 +167,18 @@ export function createSync(userId: string, onRemote: (state: Board) => void): Sy
    * ignores calls that don't change it (tab loads, modal toggles…). */
   let lastSnap: string | undefined
   let timer: ReturnType<typeof setTimeout> | null = null
-  let queue: Promise<void> = Promise.resolve()
+  let queue: Promise<unknown> = Promise.resolve()
   let refreshing: Promise<void> | null = null
 
-  function setBase(next: Synced) {
+  function setBase(next: StoredBase) {
     base = next
     lsSet(LS_BASE, JSON.stringify(next))
+  }
+  /** Take `next` as the confirmed board. If it lost content this device had
+   * confirmed in `prev`, that copy is set aside first. */
+  function adopt(next: Synced, prev: StoredBase | null = base) {
+    if (prev && prev.ts !== next.ts) stashIfLossy(prev, next.data)
+    setBase(next)
   }
   function markDirty(on: boolean) {
     lsSet(LS_DIRTY, on ? '1' : null)
@@ -213,44 +186,52 @@ export function createSync(userId: string, onRemote: (state: Board) => void): Sy
   function show(board: Board) {
     latest = board
     lastSnap = stable(board)
-    if (ready) onRemote(board)
+    if (ready) {
+      rev += 1
+      onRemote(board, rev)
+    }
   }
   function schedule(ms: number) {
     if (timer) clearTimeout(timer)
     timer = setTimeout(() => void flush(), ms)
   }
 
-  /** Push `board`; on a lost race, merge with the winner and retry once. */
+  /** Push `board`; on a lost race, merge with the winner and retry once. A
+   * base saved by an earlier build carries no version, so it can't be
+   * written from: that counts as a lost race too, which pulls one. */
   async function push(board: Board): Promise<boolean> {
-    let res = await write(userId, board, base ? base.ts : null)
+    let res: Written | 'conflict' | 'error' =
+      base && base.version === undefined ? 'conflict' : await write(userId, board, base as Synced | null)
     if (res === 'conflict') {
       const p = await pull(userId)
       if (!p.ok) return false
       const remote = p.row
       const merged = mergeStates(base ? base.data : null, board, remote ? remote.data : {})
+      if (remote) adopt(remote)
       console.info('sync: push conflict → merged with newer save from another device')
-      res = await write(userId, merged, remote ? remote.ts : null)
+      res = await write(userId, merged, remote)
+      // Keep anything typed while this was in flight.
+      const next = pending && latest ? mergeStates(board, latest, merged, 'local') : merged
       if (res === 'conflict' || res === 'error') {
-        // Lost again (or failed): adopt the server's version as the base so
-        // the retry merges against it.
-        if (remote) setBase(remote)
+        // Lost again (or failed): carry on from the merged board, so the
+        // retry can't push this device's stale copy over the newer one.
+        show(next)
         return false
       }
-      setBase({ ts: res, data: merged })
-      // Keep anything typed while this was in flight.
-      show(pending && latest ? mergeStates(board, latest, merged) : merged)
+      setBase({ ...res, data: merged })
+      show(next)
       return true
     }
     if (res === 'error') return false
-    setBase({ ts: res, data: board })
+    setBase({ ...res, data: board })
     return true
   }
 
-  function flush(): Promise<void> {
+  function flush(): Promise<boolean> {
     if (timer) clearTimeout(timer)
     timer = null
-    queue = queue.then(async () => {
-      if (!loaded || !pending || !latest) return
+    const run = queue.then(async () => {
+      if (!loaded || !pending || !latest) return true
       pending = false
       let ok = false
       try {
@@ -262,11 +243,14 @@ export function createSync(userId: string, onRemote: (state: Board) => void): Sy
         pending = true
         schedule(RETRY_DELAY)
       } else if (!pending) markDirty(false)
+      return ok
     })
-    return queue
+    queue = run
+    return run
   }
 
-  function persist(state: State) {
+  function persist(state: State, atRev: number) {
+    if (atRev !== rev) return
     const snap = stable(state)
     if (snap === lastSnap) return
     lastSnap = snap
@@ -284,14 +268,17 @@ export function createSync(userId: string, onRemote: (state: Board) => void): Sy
       const p = await pull(userId)
       if (!p.ok || !p.row) return
       const remote = p.row
-      if (base && base.ts === remote.ts) return
+      if (base && base.ts === remote.ts) {
+        if (base.version === undefined) setBase(remote)
+        return
+      }
       if (pending && latest) {
         const merged = mergeStates(base ? base.data : null, latest, remote.data)
-        setBase(remote)
+        adopt(remote)
         show(merged)
         void flush()
       } else {
-        setBase(remote)
+        adopt(remote)
         show(remote.data)
       }
     })().finally(() => {
@@ -302,7 +289,7 @@ export function createSync(userId: string, onRemote: (state: Board) => void): Sy
 
   async function load(): Promise<Board | null> {
     const local = lsJson<Board>(LS_KEY)
-    const savedBase = lsJson<Synced>(LS_BASE)
+    const savedBase = lsJson<StoredBase>(LS_BASE)
     const dirty = lsGet(LS_DIRTY) === '1'
     lsSet(LS_LEGACY_TS, null)
 
@@ -339,21 +326,82 @@ export function createSync(userId: string, onRemote: (state: Board) => void): Sy
     }
 
     if (local && dirty) {
-      // Edits this device never got to push: fold them into the server's board.
+      // Edits this device never got to push: fold them into the server's
+      // board. Without a record of what they were made on top of, the
+      // server's board is trusted and only additions are taken from here.
       const merged =
         savedBase && savedBase.ts === remote.ts
           ? local
-          : mergeStates(savedBase ? savedBase.data : remote.data, local, remote.data)
-      setBase(remote)
+          : mergeStates(savedBase ? savedBase.data : null, local, remote.data)
+      adopt(remote, savedBase)
+      if (same(merged, remote.data)) {
+        markDirty(false)
+        return done(remote.data)
+      }
       return pushFirst(merged)
     }
 
-    setBase(remote)
+    adopt(remote, savedBase)
     markDirty(false)
     return done(remote.data)
   }
 
-  return { load, persist, flush, refresh }
+  /* ---------- set-aside copy ---------- */
+
+  function readBackup(): Backup | null {
+    const b = lsJson<Backup>(LS_BACKUP)
+    if (!b || !b.data || typeof b.at !== 'number') return null
+    if (Date.now() - b.at > BACKUP_TTL) {
+      lsSet(LS_BACKUP, null)
+      return null
+    }
+    return b
+  }
+  function writeBackup(b: Backup) {
+    lsSet(LS_BACKUP, JSON.stringify(b))
+  }
+  function stashIfLossy(prev: StoredBase, next: Board) {
+    if (same(prev.data, next) || !isLossy(lossOf(prev.data, next))) return
+    const cur = readBackup()
+    // A copy the user hasn't dealt with yet is not overwritten.
+    if (cur && !cur.dismissed && !cur.undo && !same(cur.data, next)) return
+    writeBackup({ ts: prev.ts, version: prev.version, at: Date.now(), data: prev.data, replacedBy: next })
+    console.info("sync: set aside this device's copy — the board from another device is missing content it had")
+  }
+  function onScreen(): Board | null {
+    return latest ?? (base ? base.data : null)
+  }
+  function backup() {
+    const b = readBackup()
+    if (!b || b.dismissed || same(b.data, onScreen())) return null
+    return { ts: b.ts, undo: !!b.undo }
+  }
+  function dismissBackup() {
+    const b = readBackup()
+    if (b) writeBackup({ ...b, dismissed: true })
+  }
+  async function restore(): Promise<boolean> {
+    const b = readBackup()
+    if (!loaded || !b || b.dismissed) return false
+    await flush()
+    const current = onScreen() ?? {}
+    // Put the copy back on top of whatever changed since it was set aside.
+    const merged = b.replacedBy ? mergeStates(b.replacedBy, b.data, current, 'local') : b.data
+    writeBackup({
+      ts: base ? base.ts : '',
+      version: base ? base.version : undefined,
+      at: Date.now(),
+      data: current,
+      replacedBy: merged,
+      undo: !b.undo,
+    })
+    show(merged)
+    pending = true
+    markDirty(true)
+    return flush()
+  }
+
+  return { load, persist, flush, refresh, backup, restore, dismissBackup }
 }
 
 export interface ArchiveRow {
