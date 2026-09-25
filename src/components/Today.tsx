@@ -1,9 +1,10 @@
 import React from 'react'
 import { MANTRAS, QUOTE } from '../lib/content'
-import { C, Check, CornerTicks, DelBtn, MONO, Panel, Pips, PlusGlyph, css } from './ui'
+import { AutoText, C, Check, CornerTicks, DelBtn, MONO, Panel, Pips, PlusGlyph, Slot, css, firstLine } from './ui'
 import type { Dot, Row, WeekDot } from './ui'
 
 type Change = (e: React.ChangeEvent<HTMLInputElement>) => void
+type AreaChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => void
 
 interface Props {
   quoteOpen: boolean
@@ -27,10 +28,10 @@ interface Props {
   nextWorkIdx: string
   nextMiscIdx: string
   newWorkTask: string
-  setNewWorkTask: Change
+  setNewWorkTask: AreaChange
   onWorkKey: (e: React.KeyboardEvent) => void
   newMiscTask: string
-  setNewMiscTask: Change
+  setNewMiscTask: AreaChange
   onMiscKey: (e: React.KeyboardEvent) => void
   progressLabel: string
   onPurge: () => void
@@ -75,36 +76,44 @@ function TaskList(p: {
   moveLabel: string
   nextIdxLabel: string
   draft: string
-  setDraft: Change
+  setDraft: AreaChange
   onKey: (e: React.KeyboardEvent) => void
 }) {
   return (
     <Panel num={p.num} label={p.label} accentLabel={p.accentLabel} meta={p.meta}>
-      {p.rows.map((row) => (
-        <div
-          key={row.key}
-          className="row"
-          style={css(`display:flex;align-items:center;gap:13px;padding:${p.rowPad}px 0;border-bottom:1px solid ${C.borderHair}`)}
-        >
-          <span style={rowIdx}>{row.idx}</span>
-          <Check done={row.done} onClick={row.toggle} size={p.box} label={row.done ? 'Mark not done' : 'Mark done'} />
-          <input type="text" value={row.text} onChange={row.onChange} placeholder="…" style={row.inputStyle} />
-          <button
-            onClick={row.move}
-            className="txtbtn"
-            aria-label={'Move to ' + p.moveLabel.toLowerCase()}
-            style={css('font-size:10px;letter-spacing:0.12em;flex:none')}
+      {p.rows.map((row) => {
+        const h = firstLine(Number(row.inputStyle.fontSize), 6)
+        return (
+          <div
+            key={row.key}
+            className="row"
+            style={css(`display:flex;align-items:flex-start;gap:13px;padding:${p.rowPad}px 0;border-bottom:1px solid ${C.borderHair}`)}
           >
-            {p.moveLabel}
-          </button>
-          <DelBtn onClick={row.del} label="Delete task" />
-        </div>
-      ))}
-      <div style={css('display:flex;align-items:center;gap:13px;padding:10px 0')}>
-        <span style={nextIdx}>{p.nextIdxLabel}</span>
-        <PlusGlyph size={p.box} />
-        <input
-          type="text"
+            <Slot h={h}>
+              <span style={rowIdx}>{row.idx}</span>
+              <Check done={row.done} onClick={row.toggle} size={p.box} label={row.done ? 'Mark not done' : 'Mark done'} />
+            </Slot>
+            <AutoText value={row.text} onChange={row.onChange} placeholder="…" style={row.inputStyle} />
+            <Slot h={h}>
+              <button
+                onClick={row.move}
+                className="txtbtn"
+                aria-label={'Move to ' + p.moveLabel.toLowerCase()}
+                style={css('font-size:10px;letter-spacing:0.12em;flex:none')}
+              >
+                {p.moveLabel}
+              </button>
+              <DelBtn onClick={row.del} label="Delete task" />
+            </Slot>
+          </div>
+        )
+      })}
+      <div style={css('display:flex;align-items:flex-start;gap:13px;padding:10px 0')}>
+        <Slot h={firstLine(p.addSize, 4)}>
+          <span style={nextIdx}>{p.nextIdxLabel}</span>
+          <PlusGlyph size={p.box} />
+        </Slot>
+        <AutoText
           value={p.draft}
           onChange={p.setDraft}
           onKeyDown={p.onKey}
