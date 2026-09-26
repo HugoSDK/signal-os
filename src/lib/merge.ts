@@ -42,6 +42,7 @@ export const MERGE_DEPTH: Record<string, number> = {
   tasks: 1, // item id
   reviewItems: 1,
   milestones: 1,
+  shopping: 1,
 }
 
 /**
