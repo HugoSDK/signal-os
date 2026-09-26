@@ -17,6 +17,10 @@ Data syncs across browsers/devices via Supabase.
 - **Forever streaks** — daily "One Lead / One Post" history lives server-side,
   so streaks are never lost when a browser is cleared. (The streak count itself
   is unbounded; the dot row shows the last 14 days.)
+- **Shopping list** — panel 05 on Today, under MONTH. Items stay across days
+  (they're not cleared by the daily rollover or archived with the month);
+  tick them off as you buy them and **CLEAR BOUGHT** removes the ticked ones.
+  Syncs and merges by item like the other lists.
 - **Period rollover** — at the start of a new week/month, a prompt offers to
   **archive** the previous period (kept in history) and start fresh, or carry it
   over.

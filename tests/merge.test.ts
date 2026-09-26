@@ -116,3 +116,13 @@ test('carryOver: a value both sides changed keeps the edit made here', () => {
   const shown = { weekTheme: 'a' }
   assert.equal(carryOver(shown, { weekTheme: 'mine' }, { weekTheme: 'theirs' }).weekTheme, 'mine')
 })
+
+test('shopping list merges by id like the other lists', () => {
+  const item = (id: number, text: string, done = false) => ({ id, text, done })
+  const base = { shopping: [item(1, 'milk'), item(2, 'eggs')] }
+  const local = { shopping: [item(1, 'milk', true), item(2, 'eggs'), item(3, 'bread')] } // bought milk, added bread
+  const remote = { shopping: [item(1, 'milk'), item(4, 'coffee')] } // deleted eggs, added coffee
+  const out = mergeStates(base, local, remote)
+  assert.deepEqual(ids(out.shopping), [1, 3, 4])
+  assert.equal(out.shopping[0].done, true)
+})

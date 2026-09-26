@@ -67,6 +67,9 @@ export interface State {
   monthFocus: string
   milestones: Item[]
   newMilestone: string
+  /** Shopping list: kept across days until bought items are cleared. */
+  shopping: Item[]
+  newShopItem: string
   monthObs: string
   monthCorr: string
   revGoal: string
@@ -128,6 +131,8 @@ export const DEFAULT_STATE: State = {
   monthFocus: '',
   milestones: [],
   newMilestone: '',
+  shopping: [],
+  newShopItem: '',
   monthObs: '',
   monthCorr: '',
   revGoal: '5000',
@@ -175,6 +180,7 @@ const SESSION = [
   'newPriority',
   'newReview',
   'newMilestone',
+  'newShopItem',
   'pendingRollover',
   'archiveError',
 ] as const
@@ -203,6 +209,7 @@ export default class Ledger extends React.Component<LedgerProps, State> {
       newPriority: '',
       newReview: '',
       newMilestone: '',
+      newShopItem: '',
       pendingRollover: null,
       archiveError: null,
       intentionOpen: false,
@@ -655,7 +662,7 @@ export default class Ledger extends React.Component<LedgerProps, State> {
 
   /* ---------- lists ---------- */
 
-  listRows(key: 'tasks' | 'milestones', size = 17.5): Row[] {
+  listRows(key: 'tasks' | 'milestones' | 'shopping', size = 17.5): Row[] {
     return (this.state[key] as Item[]).map((it, i) => ({
       key: it.id,
       idx: pad(i + 1),
@@ -709,8 +716,8 @@ export default class Ledger extends React.Component<LedgerProps, State> {
   }
 
   commit(
-    listKey: 'tasks' | 'reviewItems' | 'milestones',
-    draftKey: 'newWorkTask' | 'newMiscTask' | 'newReview' | 'newMilestone',
+    listKey: 'tasks' | 'reviewItems' | 'milestones' | 'shopping',
+    draftKey: 'newWorkTask' | 'newMiscTask' | 'newReview' | 'newMilestone' | 'newShopItem',
     category?: 'work' | 'misc'
   ) {
     return (e: React.KeyboardEvent) => {
@@ -801,6 +808,8 @@ export default class Ledger extends React.Component<LedgerProps, State> {
     const openCount = s.tasks.length - doneCount
     const msDone = s.milestones.filter((m) => m.done).length
     const msTotal = s.milestones.length
+    const shopRows = this.listRows('shopping', 16)
+    const boughtCount = s.shopping.filter((x) => x.done).length
     const openTasks = s.tasks.filter((x) => !x.done && (x.text || '').trim())
 
     /* --- archive --- */
@@ -907,6 +916,14 @@ export default class Ledger extends React.Component<LedgerProps, State> {
               msTotal={msTotal}
               openMilestones={this.listRows('milestones').filter((r) => !r.done).slice(0, 3)}
               milestoneEmptyLabel={msTotal > 0 ? 'ALL COMPLETE' : 'NONE SET'}
+              shopRows={shopRows}
+              shopCountLabel={pad(boughtCount) + '/' + pad(shopRows.length)}
+              nextShopIdx={pad(shopRows.length + 1)}
+              newShopItem={s.newShopItem}
+              setNewShopItem={(e) => this.setState({ newShopItem: e.target.value })}
+              onShopKey={this.commit('shopping', 'newShopItem')}
+              boughtCount={boughtCount}
+              onClearBought={() => this.setState((prev) => ({ shopping: prev.shopping.filter((x) => !x.done) }))}
             />
           )}
 

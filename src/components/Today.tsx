@@ -57,6 +57,15 @@ interface Props {
   msTotal: number
   openMilestones: Row[]
   milestoneEmptyLabel: string
+
+  shopRows: Row[]
+  shopCountLabel: string
+  nextShopIdx: string
+  newShopItem: string
+  setNewShopItem: AreaChange
+  onShopKey: (e: React.KeyboardEvent) => void
+  boughtCount: number
+  onClearBought: () => void
 }
 
 const rowIdx = css(`font-family:${MONO};font-size:10px;color:${C.inkLabel};flex:none;width:14px`)
@@ -400,6 +409,49 @@ export default function Today(p: Props) {
                 {p.milestoneEmptyLabel}
               </div>
             )}
+          </Panel>
+
+          <Panel num="05" label="SHOPPING" meta={p.shopCountLabel} bottom={10}>
+            {p.shopRows.map((row) => {
+              const h = firstLine(Number(row.inputStyle.fontSize), 6)
+              return (
+                <div
+                  key={row.key}
+                  className="row"
+                  style={css(`display:flex;align-items:flex-start;gap:13px;padding:7px 0;border-bottom:1px solid ${C.borderHair}`)}
+                >
+                  <Slot h={h}>
+                    <span style={rowIdx}>{row.idx}</span>
+                    <Check done={row.done} onClick={row.toggle} size={12} label={row.done ? 'Mark not bought' : 'Mark bought'} />
+                  </Slot>
+                  <AutoText value={row.text} onChange={row.onChange} placeholder="…" style={row.inputStyle} />
+                  <Slot h={h}>
+                    <DelBtn onClick={row.del} label="Delete item" />
+                  </Slot>
+                </div>
+              )
+            })}
+            <div style={css('display:flex;align-items:flex-start;gap:13px;padding:10px 0 4px')}>
+              <Slot h={firstLine(16, 4)}>
+                <span style={nextIdx}>{p.nextShopIdx}</span>
+                <PlusGlyph size={12} />
+              </Slot>
+              <AutoText
+                value={p.newShopItem}
+                onChange={p.setNewShopItem}
+                onKeyDown={p.onShopKey}
+                placeholder="add item, press Enter…"
+                className="uin"
+                style={css(`flex:1;min-width:0;font-size:16px;color:${C.inkSoft};padding:4px 0`)}
+              />
+            </div>
+            {p.boughtCount > 0 ? (
+              <div style={css('display:flex;justify-content:flex-end;padding-top:4px')}>
+                <button onClick={p.onClearBought} className="txtbtn" style={css('font-size:10.5px;letter-spacing:0.14em')}>
+                  CLEAR BOUGHT
+                </button>
+              </div>
+            ) : null}
           </Panel>
         </div>
       </div>
